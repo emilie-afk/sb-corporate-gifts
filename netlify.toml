@@ -11,6 +11,9 @@
 
 [functions]
   node_bundler = "esbuild"
+  # exceljs (and its jszip) are CommonJS packages with dynamic requires; they cannot be inlined into the
+  # ESM bundle, so they are shipped as regular node_modules alongside the function.
+  external_node_modules = ["exceljs", "jszip"]
 
 [[headers]]
   for = "/*"

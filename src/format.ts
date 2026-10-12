@@ -45,7 +45,7 @@ export const FORMAT_LABEL: Record<string, string> = {
 };
 export const FAMILY_LABEL: Record<string, string> = {
   live_to_give_box: "Live to Give Gift Box", succulent_arrangement: "Succulent arrangement", airplant_gift_set: "Airplant gift set",
-  plant_only: "Plant-only gift", custom_pots: "Custom pots (pots only)", pots_plus_succulents: "Custom pots + succulents (bulk only)",
+  plant_only: "Plant-only gift", custom_pots: "Custom pots (pots only)", pots_plus_succulents: "Custom pots + succulents — complete gift (bulk only)",
   watering_can: "Watering can", other: "Other",
 };
 export const TRI_LABEL: Record<string, string> = { yes: "Yes", no: "No", unknown: "Unknown" };
