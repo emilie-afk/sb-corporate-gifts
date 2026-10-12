@@ -210,12 +210,12 @@ function SourceForm({ m, onClose, onSaved }: { m: any; onClose: () => void; onSa
         <ErrorBox error={s.error} />
         <Field label="Label" required error={s.fe("label")}><input value={f.label} onChange={set("label")} /></Field>
         <Field label="Vendor" required error={s.fe("vendor")}><input value={f.vendor} onChange={set("vendor")} /></Field>
-        <Field label="Spreadsheet link or ID" required wide error={s.fe("spreadsheet")}><input value={f.spreadsheet} onChange={set("spreadsheet")} /></Field>
+        <Field label="Link to the vendor tab" required wide error={s.fe("spreadsheet")} hint="Open the vendor tab in Google Sheets and copy the browser link — it includes the tab’s gid."><input value={f.spreadsheet} onChange={set("spreadsheet")} /></Field>
         <Field label="Tab name" required error={s.fe("tab_name")}><input value={f.tab_name} onChange={set("tab_name")} /></Field>
-        <Field label="Tab gid (optional)"><input value={f.tab_gid} onChange={set("tab_gid")} /></Field>
+        <Field label="Tab gid" error={s.fe("tab_gid")} hint="Filled from the link automatically if blank (the number after gid=)."><input inputMode="numeric" value={f.tab_gid} onChange={set("tab_gid")} /></Field>
         <Field label="Header row" required error={s.fe("header_row")}><input inputMode="numeric" value={f.header_row} onChange={set("header_row")} /></Field>
         <Field label="Last column" hint="e.g. Z or AF" error={s.fe("last_column")}><input value={f.last_column} onChange={set("last_column")} /></Field>
-        <Field label="Product matching column(s)" required wide hint="Exact header names, comma-separated (e.g. SKU, Variant). Matching is exact — no similar-name matching." error={s.fe("match_columns")}><input value={f.match_columns} onChange={set("match_columns")} /></Field>
+        <Field label="Product matching column(s)" required wide hint="Header names as shown in the sheet, comma-separated (e.g. SKU). Line breaks/extra spaces in headers are ignored. Row matching is exact — no similar-name matching." error={s.fe("match_columns")}><input value={f.match_columns} onChange={set("match_columns")} /></Field>
         <Field label="Cost column" required error={s.fe("cost_column")}><input value={f.cost_column} onChange={set("cost_column")} /></Field>
         <Field label="Cost basis" required error={s.fe("cost_basis")}><Select value={f.cost_basis} onChange={set("cost_basis")} options={{ per_piece: "Per piece", per_pack: "Per complete pack / gift" }} empty="Choose…" /></Field>
         <Field label="Pack quantity column (optional)" hint="Otherwise the quantity per gift is entered per gift."><input value={f.quantity_column} onChange={set("quantity_column")} /></Field>

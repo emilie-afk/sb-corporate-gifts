@@ -1,7 +1,10 @@
-// Applies db/migrations/*.sql in order, once each. Usage: DATABASE_URL=... npm run db:migrate
+// Applies db/migrations/*.sql in order (once each), then the initial data (once).
+// Usage: DATABASE_URL=... npm run db:migrate
+// On Netlify it runs only in the production build (see netlify.toml) against the Neon DATABASE_URL.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getPool, closePool } from "../server/db";
+import { seed } from "./seed";
 
 export async function migrate(log = true) {
   const pool = getPool();
@@ -25,8 +28,13 @@ export async function migrate(log = true) {
       client.release();
     }
   }
+  await seed(log);
 }
 
 if (process.argv[1]?.endsWith("migrate.ts")) {
+  if (!process.env.DATABASE_URL) {
+    console.error("DATABASE_URL is not set — add the Neon connection string in Netlify (production, builds + functions).");
+    process.exit(1);
+  }
   migrate().then(() => closePool()).catch((e) => { console.error(e); process.exit(1); });
 }

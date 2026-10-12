@@ -12,8 +12,8 @@ Independent of the team's task tracker (no links or sync).
 | `netlify/functions/api.ts` | Single function serving `/api/*` |
 | `server/` | API: auth, router, validation, audit, routes, Shopify/Sheets/cost logic |
 | `db/migrations/*.sql` | Schema (constraints, overlap exclusion, immutability trigger) |
-| `db/seed/providers.ts`, `scripts/seed.ts` | Reproducible, idempotent seed |
-| `scripts/migrate.ts` | Applies migrations once each |
+| `db/seed/providers.ts`, `scripts/seed.ts` | Initial data, applied once per database by `db:migrate` |
+| `scripts/migrate.ts` | Applies pending migrations, then the initial data once |
 | `scripts/dev-server.ts` | Local preview server (built SPA + same API handler) |
 | `tests/` | Business-rule tests (Vitest, real Postgres) |
 | `scripts/ui-smoke.ts` | Browser smoke test + review screenshots (Playwright) |
@@ -24,7 +24,7 @@ Independent of the team's task tracker (no links or sync).
 npm install
 createdb gifting && createdb gifting_test          # any Postgres 14+
 export DATABASE_URL=postgresql://localhost/gifting
-npm run db:migrate && npm run db:seed
+npm run db:migrate                                 # schema + initial data (once)
 npm test                                            # uses TEST_DATABASE_URL (drops/recreates its schema!)
 npm run build && LOCAL_DEV_LOGIN=1 npm run dev      # http://localhost:8888 with a placeholder local login
 ```
@@ -35,12 +35,12 @@ npm run build && LOCAL_DEV_LOGIN=1 npm run dev      # http://localhost:8888 with
 
 | Name | Where | Purpose |
 |---|---|---|
-| `DATABASE_URL` | Netlify (Functions), secret | Managed Postgres connection string |
+| `DATABASE_URL` | Netlify (Production; Builds + Functions), secret | Neon pooled connection string |
 | `SESSION_SECRET` | Netlify, secret | ≥ 32 random chars; signs the session cookie |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Netlify, secret | Google OAuth web client |
 | `APPROVED_GOOGLE_EMAILS` | Netlify, secret | Comma-separated approved login(s). **Never** in code, seed, docs or screenshots |
 | `APP_BASE_URL` | Netlify, per deploy context | Site origin used to build the OAuth redirect |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | Netlify, secret | Read-only Product Master access (see below) |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | optional, secret | Only if Product Master becomes private (see below) |
 | `SHOPIFY_CATALOG_ORIGIN` | optional | Defaults to `https://succulentsbox.com` |
 | `DB_POOL_MAX`, `DATABASE_SSL` | optional | Pool size; `false` disables TLS (local only) |
 
@@ -48,7 +48,10 @@ npm run build && LOCAL_DEV_LOGIN=1 npm run dev      # http://localhost:8888 with
 
 `netlify.toml`: build `npm run build`, publish `dist`, functions `netlify/functions` (esbuild).
 Security headers include `noindex`, `X-Frame-Options: DENY`, and a strict CSP.
-Migrations are run deliberately (not on every build): `DATABASE_URL=<context db> npm run db:migrate && npm run db:seed`.
+Database: **Neon** (free plan) PostgreSQL. Put the Neon **pooled** connection string in Netlify as
+`DATABASE_URL` (secret; context **Production**; scopes **Builds** and **Functions**). Production builds run
+`npm run db:migrate && npm run build` (see `netlify.toml`): pending migrations and the one-time initial data are
+applied before the site builds, and a failure stops the deploy. Preview/branch builds never touch the database.
 
 ## Google sign-in
 
@@ -67,11 +70,12 @@ The Google `sub` is stored privately in audit columns and stripped from all API 
 
 ## Product Master (Google Sheets) access
 
-Read-only, server-side. Default: a Google Cloud service account with the Sheets API enabled; share the Product
-Master sheet with its `client_email` as **Viewer** and put the JSON key in `GOOGLE_SERVICE_ACCOUNT_JSON`.
-The sheet never needs to be public. (If the team prefers explicit OAuth Sheets authorization, swap the reader in
-`server/lib/sheets.ts`.) Each vendor tab is configured in **Pricing → Cost source settings**; gifts are mapped to
-exact rows from **Gifts → Edit → Product Master cost mapping**. No mappings are pre-filled.
+Read-only, server-side. Product Master is shared "Anyone with the link can view", so each vendor tab is read from
+Google's CSV export of that tab (`/export?format=csv&gid=<tab gid>`). No credentials are needed; if the sheet is
+ever made private, set `GOOGLE_SERVICE_ACCOUNT_JSON` (service account shared as Viewer) and the Sheets API is used
+instead. Each vendor tab is configured in **Pricing → Cost source settings** by pasting the tab's link (the gid is
+taken from it). Header line breaks/extra spaces are ignored when matching column names. Gifts are mapped to exact
+rows from **Gifts → Edit → Product Master cost mapping**. No mappings are pre-filled.
 
 ## Website catalog
 
