@@ -66,7 +66,7 @@ export const PROVIDERS: ProviderSeed[] = [
     status: "prospect",
     priority: "First new application",
     initialAction: "Apply with standard gifts plus separate corporate MOQ-10/bulk offers.",
-    proposedGifts: "Live to Give boxes, arrangements, plant-only bulk gifts; available custom pots (pots only) and watering cans; pots plus succulents as a separate bulk offer.",
+    proposedGifts: "Live to Give boxes, arrangements, plant-only bulk gifts; available custom pots (pots only) and watering cans; custom pots with succulents as a complete gift for bulk orders only.",
     websiteUrl: "https://corporategift.com/become-a-supplier/",
     requirements: [
       { category: "other", requirement: "Public supplier application exists; a customized succulent listing establishes the category.", state: "unverified", source: "https://corporategift.com/become-a-supplier/" },
@@ -122,7 +122,7 @@ export const PROVIDERS: ProviderSeed[] = [
     status: "prospect",
     priority: "Secondary",
     initialAction: "Pitch plants for custom projects and confirm packing/fulfillment arrangements.",
-    proposedGifts: "Arrangements, air-plant sets, customized bulk plant gifts; available pots (pots only) and watering cans; pots plus succulents in bulk shipments.",
+    proposedGifts: "Arrangements, air-plant sets, customized bulk plant gifts; available pots (pots only) and watering cans; custom pots with succulents as a complete gift for bulk orders only.",
     websiteUrl: "https://www.teakandtwine.com/corporate-gifting",
     requirements: [
       { category: "other", requirement: "Custom gifting services (publicly listed).", state: "unverified", source: "https://www.teakandtwine.com/corporate-gifting" },

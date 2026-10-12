@@ -1,61 +1,92 @@
-# Corporate gifting tracker — v1 handoff (2026-10-09)
+# Corporate gifting tracker — handoff (v2: easier pricing + Shopify revenue)
 
-Status: three-tab core is implemented and tested locally. **Not deployed.** Deployment needs separate authorization.
+Base: `main` @ `cadd3a7`. This change is **not pushed and not deployed**. Same three tabs; no new navigation.
 
-## Verification results
+> **Deployment note:** pushing to `main` triggers a Netlify **production** build, which runs
+> `npm run db:migrate` first. That applies `db/migrations/002_pricing_sources_and_shopify_revenue.sql` (additive:
+> new tables/columns, one replaced trigger function; existing rows unchanged; verified on a copy with v1 data) and
+> `003_pots_with_succulents_complete_gift.sql` (data only, see below) to the Neon production database. Push only
+> with authorization.
 
-- `npm test`: **41/41 pass** (real PostgreSQL 16). Covers access control, seed, checklist, status/reactivation,
-  requirements, fulfillment rules, pricing versions/overlaps, revenue, Product Master cost rules, website import.
-- `scripts/ui-smoke.ts`: **15/15 pass** in Chromium (desktop 1366 px + mobile 390 px, no horizontal scroll).
-- Live website import (read-only) ran end to end: 11 pages, 12,720 variants, 5 seeded variants kept their team fields.
-- Collection membership import for the corporate collection: 136 products → 574 variant links.
+## What changed
 
-| Acceptance check | Result |
-|---|---|
-| Shared login sees the same persisted records (server-side Postgres; browser stores only filters + last typed name) | Pass (design + tests) |
-| Milestone done records name/date; reopen keeps history; N/A needs reason and leaves the denominator; all-N/A → "No applicable milestones" | Pass |
-| Works without task-tracker links; no assignee/due-date fields | Pass |
-| Rejected/Not qualified/On hold/Inactive need a reason, hide by default, muted + labelled when shown | Pass |
-| Reactivation needs an explicit status and preserves every record | Pass |
-| Requirement and our response stored separately; nothing seeded as confirmed | Pass |
-| Product names/variants shown, not IDs | Pass |
-| Direct 20% discount never sets marketplace supplier prices; suggestion is labelled and not stored | Pass |
-| Revisions keep previous agreed versions; overlapping active periods rejected; supersede closes period in a transaction | Pass |
-| Duplicate channel/month revenue blocked (DB unique); totals include inactive channels | Pass |
-| Revenue = SB's supplier revenue; fees separate; "Revenue after marketplace fees" (not gross profit) | Pass |
-| Concurrent edits → 409 conflict, input kept | Pass |
-| Failed saves keep form input with actionable errors | Pass |
-| Unauthorized/unlisted logins rejected on all APIs | Pass |
-| 8 providers, correct types, no invented contacts/prices/completions | Pass |
-| $4 × 5 = $20; complete-pack $20 stays $20; bad data never overwrites a cost | Pass |
-| Refresh previews before confirm; snapshots and agreed prices survive | Pass |
-| Pots-only show "plants not included"; pots + succulents can't be individual/separate-address; pots & watering cans seeded Available | Pass |
-| Repeated imports don't duplicate; partial failures erase nothing; variants stay distinct | Pass |
+**Pricing**
+- Form prefills (read-only, with source and date): website retail price, latest confirmed Product Master cost
+  (basis, pack quantity, what it includes) and channel defaults (MOQ, direct discount, terms). Main fields: channel,
+  gift, proposed price, agreed price, customer shipping, marketplace fees, status, dates, name. The rest is under
+  **More details**.
+- Missing values stay **Unknown**. A manual value needs amount + reason + source + date and is labelled
+  **Manual**. The API refuses typed `retail_ref_cents` / `internal_cost_cents`.
+- Agreed prices snapshot retail, cost and terms; refreshes show current values beside the snapshot; Revise creates
+  a new dated version from current source values.
+- **Import pricing Excel** (optional): downloadable template, automatic column recognition + manual mapping,
+  stable-identifier matching (variant ID / exact SKU, never names), ambiguity resolution, validation, explicit draft
+  updates, new versions only after per-row confirmation, overlap checks, idempotent re-uploads, formula/macro
+  rejection, file not stored (name, hash, date, signer, row reference kept).
 
-## Remaining requirements before deployment
+**Revenue**
+- Canonical Shopify orders (store + order Name), shared reducer that runs in the browser for manual uploads and is
+  proposed for the existing GP collector (`docs/COLLECTOR_CONTRACT.md`).
+- Secret-protected ingestion endpoint + manual **Upload Shopify report** — same validation/import code.
+- Newer snapshots update, older/equal-time-different snapshots never overwrite, exact duplicates are no-ops,
+  missing orders are never deleted, failures change nothing; every run is recorded.
+- **Shopify matching rules** panel (source / tags / billing company; exact or contains; case/space-insensitive):
+  preview → typed name → confirm; same-channel alternatives OK, cross-channel = conflict (never auto-picked).
+  Manual assign/exclude/clear with reason and history; manual wins until cleared.
+- Channel/month table: From Shopify + Manual = Combined; fees only from actual recorded entries ("Fees not
+  recorded" otherwise); revenue after fees (not gross profit); coverage and partial-month flags; import freshness.
+- Legacy monthly totals start as **Needs review** (excluded) until marked *additional* or *covered by Shopify*.
+  Manual entries (off-Shopify sale / correction / fee) need reason + reference + date; void keeps history.
 
-1. **Database** — the team chose a free option. Recommended: Neon free tier (works from Netlify Functions with the
-   standard `pg` driver; available via Netlify's database integration or directly). Provide/approve, then run
-   migrations + seed against it.
-2. **Netlify site** — create/link once the repository URL is provided; set the environment variables in README.
-3. **Google OAuth client** — create the web client; register production and one stable branch-deploy redirect URI.
-4. **Approved login(s)** — supply privately; entered only into Netlify `APPROVED_GOOGLE_EMAILS`.
-5. **Product Master access** — create a service account (or choose OAuth), share the sheet as Viewer.
-6. **Vendor tab mappings** — per vendor: tab name, header row, match column(s), cost column, cost basis, pack
-   quantity source, what the cost already includes. Not configured — nothing was guessed.
-7. **Deployment authorization** — separate approval required.
+**Gifts — pots with succulents (team clarification)**
+- Custom pots are available on their own, or with succulents as a **complete gift**. Pots with succulents are
+  **Available**, **bulk orders only**; individual recipient shipping is unavailable (individual and separate-address
+  formats stay blocked in gifts, pricing, Excel import and marketplace proposals).
+- Messages and notes no longer mention "multiple shipments" or "assembly not confirmed".
+- Migration 003 sets seeded pots-with-succulents rows to Available and replaces the old seed note only where it
+  is still the original text; team-edited values are kept. Each change is recorded in the audit history
+  ("System migration").
 
-## Open questions for the team
+## Verification
 
-- Does Product Master stay authoritative for base costs/prices? (Built that way: read-only source; agreements live here.)
-- Which marketplace terms are common vs gift-specific? (Both supported; agreed prices snapshot them.)
-- Research verification dates for seeded requirements were not supplied — left blank; fill in when known.
-- Seeded pots + succulents variants have availability **unset** (the team confirmed only pots and watering cans).
+| Check | Kind | Result |
+|---|---|---|
+| `npm run typecheck` | static | PASS |
+| `npm test` — 77 tests (16 marketplaces, 13 pricing/revenue incl. pots-with-succulents seed + migration 003, 17 Product Master/website refresh, 19 Shopify revenue, 12 pricing references + Excel) | **fixtures** on real PostgreSQL 16 | **77/77 PASS** |
+| `npm run build` + function bundle load (exceljs/jszip external) | build | PASS |
+| `scripts/ui-smoke.ts` — 28 browser checks, desktop 1366 px + mobile 390 px | **fixtures** (local DB, synthetic orders CSV, two fixture gift variants) | **28/28 PASS** |
+| Migration 002 on a database holding v1 data | local copy | PASS (legacy record → Needs review; agreed price untouched) |
+| Live public Shopify catalog import | **real service**, read-only | Worked earlier in the session (12,766 variants); a repeat run hit Shopify **HTTP 429** after several full pulls — nothing was written (failed run recorded, previous data kept) |
+| GP collector → this app | — | **NOT RUN** (collector change not applied; needs review in the GP repo) |
+| Netlify / Neon / Google | — | **NOT RUN** (no push, no deploy) |
 
-## Notes
+Fixture tests cover the brief's list: prefilling, unknown costs, per-piece vs complete-pack, snapshot preservation,
+Excel mapping/ambiguity/invalid values/formulas/macros/duplicates/revisions/overlaps, multi-line orders, repeated and
+overlapping imports, older-snapshot protection, discounts/shipping/refunds/taxes/Route/gift cards, LA month boundary,
+matching normalisation, same-channel and cross-channel rules, exclusions, manual overrides, rule confirmation and
+stale previews, reconciliation, unauthorised ingestion (no secret / wrong secret / Google cookie), privacy rejection,
+failed imports preserving data.
 
-- Live to Give is applied only to gifts the team marks as "Live to Give Gift Box" — never automatically.
-- Per-PR deploy previews cannot use Google sign-in (Google does not accept wildcard redirect URIs); use a branch deploy.
-- The static app bundle has no business data; all records come from authenticated API calls.
-- Screenshots in `screenshots/` come from a local database; entries marked "Example only (screenshot)" / "UI smoke
-  test" are local test data, not business records.
+## Setup after authorization
+
+1. Push to `main` (migrations 002 and 003 run in the production build).
+2. Netlify → add `CORPORATE_INGEST_SECRET` (secret, Functions scope, ≥ 32 random chars). Until then the endpoint
+   answers 503 and only manual uploads work.
+3. GP repo (separate review): add the corporate payload step to the collector (snippet in the contract), store the
+   same secret in Windows Credential Manager (`sb-corporate-ingest`), set the app URL in collector config. No new
+   scheduled task; the existing Monday run carries it.
+4. First use: upload one Shopify export manually, create matching rules from the values offered, reconcile legacy
+   monthly totals.
+
+## Remaining questions
+
+- Which fields identify corporate orders in practice (source app id, tags, billing company)? Rules are configured
+  after real orders arrive; only fields present in reports are offered.
+- Is sharing **Billing Company** with this app acceptable for the collector payload? (Tags and source are already
+  business identifiers; personal-looking values are dropped.)
+- Pending / authorized / partially paid orders are **counted and flagged** (GP does not filter by payment status).
+  Should corporate revenue wait for payment instead?
+- Refunds are attributed to the original order month (no refund dates in the export). OK for v1?
+- Cancelled orders with a retained amount are excluded and flagged (GP keeps shipping only with carrier evidence).
+- Gift-card purchases and Route lines are excluded from gift revenue — confirm.
+- Approve the GP collector change and its review path.

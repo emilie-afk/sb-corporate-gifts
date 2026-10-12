@@ -8,14 +8,17 @@ Independent of the team's task tracker (no links or sync).
 
 | Path | What |
 |---|---|
-| `src/` | React SPA (Vite). Screens: `Marketplaces`, `Pricing` (+ `Gifts`, `Refresh`), `Revenue` |
+| `src/` | React SPA (Vite). Screens: `Marketplaces`, `Pricing` (+ `PricingForm`, `PricingImport`, `Gifts`, `Refresh`), `Revenue` |
+| `shared/corporateOrders.js` | Shopify-export → minimal order payload (runs in the browser; proposed for the GP collector) |
+| `docs/COLLECTOR_CONTRACT.md` | Ingestion endpoint, payload, privacy rules, revenue treatment, proposed collector change |
+| `docs/TEAM_GUIDE.md` | Short team instructions (pricing, Excel import, matching rules, revenue review) |
 | `netlify/functions/api.ts` | Single function serving `/api/*` |
 | `server/` | API: auth, router, validation, audit, routes, Shopify/Sheets/cost logic |
 | `db/migrations/*.sql` | Schema (constraints, overlap exclusion, immutability trigger) |
 | `db/seed/providers.ts`, `scripts/seed.ts` | Initial data, applied once per database by `db:migrate` |
 | `scripts/migrate.ts` | Applies pending migrations, then the initial data once |
 | `scripts/dev-server.ts` | Local preview server (built SPA + same API handler) |
-| `tests/` | Business-rule tests (Vitest, real Postgres) |
+| `tests/` | Business-rule tests (Vitest, real Postgres); `tests/fixtures/*SYNTHETIC*` are invented data |
 | `scripts/ui-smoke.ts` | Browser smoke test + review screenshots (Playwright) |
 
 ## Local setup
@@ -40,13 +43,15 @@ npm run build && LOCAL_DEV_LOGIN=1 npm run dev      # http://localhost:8888 with
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Netlify, secret | Google OAuth web client |
 | `APPROVED_GOOGLE_EMAILS` | Netlify, secret | Comma-separated approved login(s). **Never** in code, seed, docs or screenshots |
 | `APP_BASE_URL` | Netlify, per deploy context | Site origin used to build the OAuth redirect |
+| `CORPORATE_INGEST_SECRET` | Netlify (Functions), secret | ≥ 32 random chars; bearer credential for `POST /api/ingest/shopify-orders` (collector). Unset = endpoint disabled |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | optional, secret | Only if Product Master becomes private (see below) |
 | `SHOPIFY_CATALOG_ORIGIN` | optional | Defaults to `https://succulentsbox.com` |
 | `DB_POOL_MAX`, `DATABASE_SSL` | optional | Pool size; `false` disables TLS (local only) |
 
 ## Netlify
 
-`netlify.toml`: build `npm run build`, publish `dist`, functions `netlify/functions` (esbuild).
+`netlify.toml`: build `npm run build`, publish `dist`, functions `netlify/functions` (esbuild;
+`exceljs`/`jszip` are shipped as external node modules because they cannot be inlined into the ESM bundle).
 Security headers include `noindex`, `X-Frame-Options: DENY`, and a strict CSP.
 Database: **Neon** (free plan) PostgreSQL. Put the Neon **pooled** connection string in Netlify as
 `DATABASE_URL` (secret; context **Production**; scopes **Builds** and **Functions**). Production builds run
@@ -101,3 +106,24 @@ Collection membership can be imported for `succulentsbox.com/collections/<handle
 
 Conventions: every mutation needs `signer_name` and (for edits) the record's `version` — a stale version returns
 `409 conflict`. Validation errors return `400` with `error.details.fields`. Money is integer cents; `null` = unknown.
+
+## Pricing references and Excel import
+
+- `GET /api/pricing/references?product_id&channel_id` returns the current website retail price, the latest
+  confirmed Product Master cost (basis, pack quantity, inclusions) and channel defaults. Pricing records store
+  `retail_source` / `cost_source` (`shopify`, `product_master`, `manual`) with details; typed reference numbers are
+  refused unless sent as `retail_override` / `cost_override` `{cents, reason, source, date}`.
+- Excel: `GET /api/pricing-import/template`, `POST /api/pricing-import/preview` (base64 .xlsx ≤ 2 MB),
+  `POST /api/pricing-import/:id/preview` (mapping / gift resolutions), `POST /api/pricing-import/:id/confirm`,
+  `POST /api/pricing-import/:id/discard`. The workbook is never stored — only parsed values, file name, SHA-256,
+  date and signer.
+
+## Shopify revenue
+
+- Collector: `POST /api/ingest/shopify-orders` (bearer `CORPORATE_INGEST_SECRET`). Manual fallback:
+  **Revenue → Upload Shopify report** (reduced in the browser, then `POST /api/revenue/imports/manual`). Same
+  validation and import code. See `docs/COLLECTOR_CONTRACT.md`.
+- Other routes: `GET /api/revenue/summary`, `GET /api/revenue/imports`, `GET /api/revenue/orders`,
+  `POST /api/revenue/orders/:id/classify`, `GET /api/revenue/rules`, `GET /api/revenue/rules/fields`,
+  `POST /api/revenue/rules/preview`, `POST /api/revenue/rules/apply`, `GET|POST /api/revenue/adjustments`,
+  `POST /api/revenue/adjustments/:id/void`, `POST /api/revenue/monthly/:id/reconcile`.

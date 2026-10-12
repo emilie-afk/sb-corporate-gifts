@@ -73,13 +73,13 @@ export async function seed(log = true) {
             family = "pots_plus_succulents";
             plants = "yes";
             individual = "no";
-            availability = null; // not stated by the team — left unset
-            fulfillmentNote = "Bulk only, delivered in multiple shipments. No individual recipient fulfillment by SB. Packing/assembly details not confirmed.";
+            // team-confirmed: available as a complete gift, bulk orders only
+            fulfillmentNote = "Complete gift (custom pots with succulents). Bulk orders only; individual recipient shipping is unavailable.";
           } else {
             family = "custom_pots";
             plants = "no";
             individual = "unknown";
-            fulfillmentNote = "Custom pots only — no plants included.";
+            fulfillmentNote = "Custom pots on their own — no plants included. Also offered with succulents as a complete gift (bulk only).";
           }
           customization = "Personalized pots; confirm exact customization scope by quote.";
         }

@@ -95,7 +95,7 @@ function GiftForm({ p, collections, onClose, onSaved }: { p: any; collections: a
     const ok = await s.run(() => (p.id ? patch(`/products/${p.id}`, { ...body, version: p.version }) : post("/products", body)));
     if (ok) { rememberSigner(signer); onSaved(); }
   };
-  const famWarn = f.family === "custom_pots" ? "Custom pots are pots only — plants not included." : f.family === "pots_plus_succulents" ? "Bulk only, multiple shipments. Cannot be fulfilled to individual recipients by SB." : f.family === "watering_can" ? "Confirm customization, MOQ, card eligibility and fulfillment per offer — don't infer from the title." : f.family === "live_to_give_box" ? "Live to Give label applies only to the gifts you mark here — never automatically." : null;
+  const famWarn = f.family === "custom_pots" ? "Custom pots on their own — plants not included. Pots with succulents are a separate complete gift." : f.family === "pots_plus_succulents" ? "Complete gift (pots with succulents), bulk orders only. Individual recipient shipping is unavailable." : f.family === "watering_can" ? "Confirm customization, MOQ, card eligibility and fulfillment per offer — don't infer from the title." : f.family === "live_to_give_box" ? "Live to Give label applies only to the gifts you mark here — never automatically." : null;
   return (
     <Overlay kind="modal" title={p.id ? productLabel(p.name, p.variant) : "Add gift"} subtitle={p.id && !isManual ? "Imported from the website. Name, URL, image and retail refresh from the site." : undefined} onClose={onClose}>
       <form onSubmit={submit} className="form-grid">

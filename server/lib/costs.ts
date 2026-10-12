@@ -14,6 +14,7 @@ export type Mapping = {
   quantity_column: string | null;
   retail_column: string | null;
   mapping_version: number;
+  cost_inclusions_note?: string | null;
 };
 
 export type Link = {
@@ -83,6 +84,10 @@ export type ComponentResult = {
   quantity: number | null;
   quantity_source: "link" | "sheet" | "not_applicable" | null;
   component_cost: number | null;
+  /** What the source cost already includes (from the mapping), recorded to avoid double counting. */
+  includes: string | null;
+  /** Explicitly mapped Product Master base/retail price for this row, when the mapping names one. */
+  base_price: number | null;
   error: string | null;
 };
 
@@ -90,7 +95,8 @@ export function computeComponent(sheet: ParsedSheet, m: Mapping, link: Link): Co
   const base: ComponentResult = {
     link_id: link.id, component_label: link.component_label, vendor: m.vendor, tab: m.tab_name, mapping_id: m.id,
     mapping_version: m.mapping_version, matched: link.match_values, row_locator: null, source_cost: null,
-    basis: m.cost_basis, quantity: null, quantity_source: null, component_cost: null, error: null,
+    basis: m.cost_basis, quantity: null, quantity_source: null, component_cost: null,
+    includes: m.cost_inclusions_note ?? null, base_price: null, error: null,
   };
   const { rows, error } = findRows(sheet, m, link.match_values);
   if (error) return { ...base, error };
@@ -98,7 +104,7 @@ export function computeComponent(sheet: ParsedSheet, m: Mapping, link: Link): Co
   if (rows.length > 1) return { ...base, error: `Duplicate match: rows ${rows.map((r) => r.rowNumber).join(", ")}` };
   const row = rows[0];
   const cost = parseAmount(row.cells[normCol(m.cost_column)]);
-  const withRow = { ...base, row_locator: row.rowNumber };
+  const withRow = { ...base, row_locator: row.rowNumber, base_price: m.retail_column ? parseAmount(row.cells[normCol(m.retail_column)]) : null };
   if (cost === null) return { ...withRow, error: `Invalid cost value in "${m.cost_column}"` };
   if (m.cost_basis === "per_pack") {
     return { ...withRow, source_cost: cost, quantity: 1, quantity_source: "not_applicable", component_cost: cost };

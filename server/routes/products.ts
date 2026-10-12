@@ -33,7 +33,7 @@ function checkFamilyRules(p: { family?: string | null; plants_included?: string;
   const fields: Record<string, string> = {};
   if (p.family === "custom_pots" && p.plants_included === "yes") fields.plants_included = "Custom pots are pots only — plants are not included.";
   if (p.family === "pots_plus_succulents" && p.individual_recipient_fulfillment === "yes")
-    fields.individual_recipient_fulfillment = "Pots plus succulents are bulk-only; SB cannot fulfill them to individual recipients.";
+    fields.individual_recipient_fulfillment = "Pots with succulents are bulk-only; individual recipient shipping is unavailable.";
   if (Object.keys(fields).length) throw badRequest("This gift's fulfillment rules don't allow that combination.", { fields });
 }
 

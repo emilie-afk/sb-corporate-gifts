@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { resetDb, call, S } from "./helpers";
+import { readFileSync } from "node:fs";
+import { getPool } from "../server/db";
 
 let channels: Record<string, any>;
 let products: any[];
@@ -25,6 +27,41 @@ describe("product fulfillment rules", () => {
     expect(potsOnly().availability).toBe("available");
     expect(products.find((p) => p.family === "watering_can").availability).toBe("available");
     expect(products.some((p) => p.availability === "planned")).toBe(false);
+  });
+  it("pots with succulents are seeded as an Available complete gift, bulk only, no individual recipient shipping", () => {
+    const all = products.filter((p) => p.family === "pots_plus_succulents");
+    expect(all.length).toBeGreaterThan(0);
+    for (const p of all) {
+      expect(p.availability).toBe("available");
+      expect(p.plants_included).toBe("yes");
+      expect(p.individual_recipient_fulfillment).toBe("no");
+      expect(p.fulfillment_note).toMatch(/complete gift/i);
+      expect(p.fulfillment_note).not.toMatch(/multiple shipments|assembly/i);
+    }
+  });
+  it("migration 003 upgrades v1-seeded pots with succulents and leaves team-edited notes alone", async () => {
+    const pool = getPool();
+    const [p1, p2] = products.filter((p) => p.family === "pots_plus_succulents");
+    const oldNote = "Bulk only, delivered in multiple shipments. No individual recipient fulfillment by SB. Packing/assembly details not confirmed.";
+    await pool.query("update products set availability = null, fulfillment_note = $2 where id = $1", [p1.id, oldNote]);
+    if (p2) await pool.query("update products set availability = 'paused', fulfillment_note = 'Team note' where id = $1", [p2.id]);
+    await pool.query("begin");
+    await pool.query(readFileSync("db/migrations/003_pots_with_succulents_complete_gift.sql", "utf8"));
+    await pool.query("commit");
+    const r1 = (await pool.query("select * from products where id = $1", [p1.id])).rows[0];
+    expect(r1.availability).toBe("available");
+    expect(r1.fulfillment_note).toMatch(/complete gift/i);
+    expect(r1.version).toBe(p1.version + 1);
+    const ev = (await pool.query("select * from audit_events where entity_id = $1 and signer_name = 'System migration'", [p1.id])).rows[0];
+    expect(ev.before.availability).toBeNull();
+    expect(ev.after.availability).toBe("available");
+    if (p2) {
+      const r2 = (await pool.query("select * from products where id = $1", [p2.id])).rows[0];
+      expect(r2.availability).toBe("paused");
+      expect(r2.fulfillment_note).toBe("Team note");
+      await pool.query("update products set availability = 'available', fulfillment_note = $2 where id = $1", [p2.id, p2.fulfillment_note]);
+    }
+    products = (await call("GET", "/products?limit=200")).body.products;
   });
   it("rejects individual fulfillment for pots + succulents on product, pricing and proposal", async () => {
     const p = potsSucc();
@@ -56,7 +93,7 @@ describe("product fulfillment rules", () => {
 
 describe("pricing", () => {
   it("never prefills marketplace supplier prices from the direct discount; unknown stays null", async () => {
-    const r = await call("POST", "/pricing", { ...S, channel_id: channels["Goody"].id, product_id: gift.id, fulfillment_format: "individual", retail_ref_cents: 2800 });
+    const r = await call("POST", "/pricing", { ...S, channel_id: channels["Goody"].id, product_id: gift.id, fulfillment_format: "individual" });
     expect(r.body.record.proposed_supplier_cents).toBeNull();
     expect(r.body.record.customer_discount_pct).toBeNull();
     expect(r.body.record.expected_shipping_cents).toBeNull();
@@ -112,7 +149,7 @@ describe("pricing", () => {
   });
 
   it("direct website pricing stores discount but agreed price only when explicitly entered", async () => {
-    const r = await call("POST", "/pricing", { ...S, channel_id: channels["Direct website"].id, product_id: gift.id, fulfillment_format: "corporate_separate_addresses", retail_ref_cents: 2800, customer_discount_pct: 20, moq: 10 });
+    const r = await call("POST", "/pricing", { ...S, channel_id: channels["Direct website"].id, product_id: gift.id, fulfillment_format: "corporate_separate_addresses", customer_discount_pct: 20, moq: 10 });
     expect(r.body.record.agreed_price_cents).toBeNull();
     expect(Number(r.body.record.customer_discount_pct)).toBe(20);
   });

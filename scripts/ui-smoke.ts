@@ -1,7 +1,10 @@
 // UI smoke test + review screenshots against the local preview server (LOCAL_DEV_LOGIN=1).
 // Usage: npm run build && (LOCAL_DEV_LOGIN=1 DATABASE_URL=... npm run dev &) && npx tsx scripts/ui-smoke.ts
 import { chromium, type Page } from "playwright";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import ExcelJS from "exceljs";
 
 const BASE = process.env.BASE_URL ?? "http://localhost:8888";
 const OUT = process.env.SHOT_DIR ?? "screenshots";
@@ -98,11 +101,17 @@ const pf = page.getByRole("dialog", { name: "Add pricing record" });
 await pf.getByLabel("Channel").selectOption({ label: "Direct website" });
 await pf.getByPlaceholder("Search gifts by name, variant or SKU").fill("Thank You Gift Box");
 await pf.getByRole("button", { name: /Thank You Gift Box — Simple/ }).click();
+const retailBox = pf.locator(".ref-box", { hasText: "Retail reference price" });
+await retailBox.getByText("From source").waitFor();
+check("retail reference prefilled from the website (no retyping)", (await retailBox.innerText()).includes("$32.63"));
+check("unknown cost shown as Unknown, not $0", (await pf.locator(".ref-box", { hasText: "Internal gift cost" }).innerText()).includes("Unknown"));
 await pf.getByLabel("Fulfillment format").selectOption("corporate_separate_addresses");
-await pf.getByLabel("Customer discount %").fill("20");
+check("direct discount prefilled from channel default", (await pf.getByLabel("Customer discount %").inputValue()) === "20");
 await pf.getByText("Suggested customer price").waitFor();
 const calc = await pf.locator(".calc").innerText();
 check("direct suggested price = retail × (1 − 20%)", calc.includes("$26.10"), calc.split("\n")[0]);
+await pf.getByRole("button", { name: /More details/ }).click();
+check("optional fields live under More details", await pf.getByLabel("Payment terms").isVisible());
 await sign(page);
 await pf.locator(".calc").scrollIntoViewIfNeeded();
 await page.screenshot({ path: `${OUT}/05-pricing-form-direct.png` });
@@ -110,7 +119,30 @@ await pf.getByRole("button", { name: "Save" }).click();
 await page.locator("tbody tr", { hasText: "Thank You Gift Box" }).waitFor();
 const agreedCell = await page.locator("tbody tr", { hasText: "Thank You Gift Box" }).locator('td[data-label="Agreed selling"]').innerText();
 check("suggested price not stored as agreed", agreedCell.trim() === "—", agreedCell);
-await page.screenshot({ path: `${OUT}/06-pricing-table.png`, fullPage: true });
+
+// manual cost override needs reason + source + date
+await page.getByRole("button", { name: "Add pricing record" }).click();
+const pm = page.getByRole("dialog", { name: "Add pricing record" });
+await pm.getByLabel("Channel").selectOption({ label: "Goody" });
+await pm.getByPlaceholder("Search gifts by name, variant or SKU").fill("Thank You Gift Box");
+await pm.getByRole("button", { name: /Thank You Gift Box — Simple/ }).click();
+await pm.locator(".ref-box", { hasText: "Internal gift cost" }).getByLabel("Enter a manual value instead").check();
+await pm.locator(".ref-box", { hasText: "Internal gift cost" }).getByLabel("Manual amount (USD)").fill("14.00");
+await pm.getByLabel("Proposed supplier price").fill("21.00");
+await sign(page);
+await pm.getByRole("button", { name: "Save" }).click();
+await pm.getByText("Reason required").waitFor();
+check("manual value without reason is refused, input kept", (await pm.getByLabel("Proposed supplier price").inputValue()) === "21.00");
+await pm.locator(".ref-box", { hasText: "Internal gift cost" }).getByLabel("Reason").fill("Example only: vendor quote pending Product Master mapping");
+await pm.locator(".ref-box", { hasText: "Internal gift cost" }).getByLabel("Source").fill("Example quote Q-SCREENSHOT");
+await pm.getByRole("button", { name: "Save" }).click();
+await page.locator("tbody tr", { hasText: "Goody" }).first().waitFor();
+await page.locator("tbody tr", { hasText: "Goody" }).first().getByRole("button", { name: "Open" }).click();
+await page.getByRole("dialog").getByText("Manual", { exact: true }).waitFor();
+check("manual value labelled Manual in the price view", true);
+await page.screenshot({ path: `${OUT}/06-pricing-view-sources.png` });
+await page.getByRole("button", { name: "Close" }).first().click();
+await page.screenshot({ path: `${OUT}/07-pricing-table.png`, fullPage: true });
 
 // ---- Pots + succulents: individual formats not offered
 await page.getByRole("button", { name: "Add pricing record" }).click();
@@ -118,58 +150,105 @@ const pf2 = page.getByRole("dialog", { name: "Add pricing record" });
 await pf2.getByLabel("Channel").selectOption({ label: "CorporateGift.com" });
 await pf2.getByPlaceholder("Search gifts by name, variant or SKU").fill("With Succulent");
 await pf2.getByRole("button", { name: /10-Pack \/ With Succulent/ }).click();
-await pf2.getByText("Pots plus succulents: bulk only").waitFor();
+await pf2.getByText("Pots with succulents: complete gift, bulk orders only").waitFor();
 const fmtOptions = await pf2.getByLabel("Fulfillment format").locator("option").allInnerTexts();
 check("pots+succulents hides individual / separate-address formats", !fmtOptions.some((o) => o.startsWith("Individual") || o.includes("separate")), fmtOptions.join(", "));
 await pf2.getByRole("button", { name: "Cancel" }).click();
 
-// ---- Revenue form with missing vs zero
+// ---- Excel pricing import
+const vid = await page.evaluate(async () => {
+  const r = await fetch("/api/products?q=Thank%20You%20Gift%20Box&selected=1").then((x) => x.json());
+  return String(r.products.find((p: any) => p.variant === "Simple").shopify_variant_id);
+});
+const wb = new ExcelJS.Workbook();
+const ws = wb.addWorksheet("Pricing");
+ws.addRow(["Channel", "Shopify variant ID", "Gift name (reference only)", "Proposed supplier price", "Fulfillment format", "Status"]);
+ws.addRow(["Reachdesk", vid, "Thank You Gift Box", 22, "Individual", "Proposed"]);
+ws.addRow(["Not a channel", vid, "Thank You Gift Box", 22, "Individual", "Draft"]);
+const xlsxPath = join(tmpdir(), "example-pricing-SCREENSHOT.xlsx");
+writeFileSync(xlsxPath, Buffer.from(await wb.xlsx.writeBuffer()));
+await page.getByRole("button", { name: "Import pricing Excel" }).click();
+const xi = page.getByRole("dialog", { name: "Import pricing Excel" });
+await sign(page);
+await xi.locator('input[type="file"]').setInputFiles(xlsxPath);
+await xi.locator("table").waitFor();
+check("Excel preview shows a valid new price and an error row", (await xi.getByText("New price").count()) === 1 && (await xi.getByText(/Unknown channel/).count()) === 1);
+await page.screenshot({ path: `${OUT}/08-excel-import-preview.png` });
+await xi.getByRole("button", { name: /Save 1 selected row/ }).click();
+await xi.getByText("Import saved.").waitFor();
+check("Excel import saved selected valid row", (await xi.locator(".alert.success").innerText()).includes("1 create"));
+await xi.getByRole("button", { name: "Close" }).last().click();
+
+// ---- Revenue: manual Shopify report upload (synthetic fixture), rule preview + confirm, manual fee
 await page.getByRole("tab", { name: "Revenue" }).click();
-await page.getByRole("button", { name: "Add monthly revenue" }).click();
-const rf = page.getByRole("dialog", { name: "Add monthly revenue" });
-await rf.getByLabel("Channel").selectOption({ label: "Direct website" });
-await rf.getByLabel("Reporting month").fill("2026-09");
-await rf.getByLabel("Order count").fill("2");
-await rf.getByLabel("Gift units sold").fill("24");
-await rf.getByLabel("Gift sales revenue (USD)").fill("626.40");
-await rf.getByLabel("Customer shipping revenue (USD)").fill("0");
-await rf.screenshot({ path: `${OUT}/07-revenue-form-missing.png` });
-await rf.getByLabel("Refunds (USD)").fill("0");
-await rf.getByLabel("Marketplace fees (USD)").fill("0");
-await rf.getByLabel("Notes").fill("Example only (screenshot) — not real revenue.");
+await page.getByRole("button", { name: "Upload Shopify report" }).click();
+const up = page.getByRole("dialog", { name: "Upload Shopify report" });
+await up.locator('input[type="file"]').setInputFiles(join(import.meta.dirname, "..", "tests", "fixtures", "shopify-orders-SYNTHETIC.csv"));
+await up.getByText(/5 orders from 7 rows/).waitFor();
+await up.getByLabel("Report exported at").fill("2026-10-05T01:00");
+await up.getByLabel("Export covers orders from").fill("2026-08-10");
+await up.getByLabel("Export covers orders to").fill("2026-10-04");
 await sign(page);
-await rf.getByRole("button", { name: "Save" }).click();
-await page.locator("tbody tr", { hasText: "2026-09" }).waitFor();
-await page.locator(".summary").waitFor();
-const net = await page.locator(".summary").innerText();
-check("revenue totals include saved record", net.includes("$626.40"), net.split("\n").slice(0, 2).join(" "));
-// duplicate month+channel blocked with actionable message
-await page.getByRole("button", { name: "Add monthly revenue" }).click();
-const rf2 = page.getByRole("dialog", { name: "Add monthly revenue" });
-await rf2.getByLabel("Channel").selectOption({ label: "Direct website" });
-await rf2.getByLabel("Reporting month").fill("2026-09");
+await page.screenshot({ path: `${OUT}/09-shopify-upload.png` });
+await up.getByRole("button", { name: "Import" }).click();
+await up.getByText(/5 new/).waitFor();
+check("manual Shopify upload imported 5 synthetic orders", true);
+await up.getByRole("button", { name: "Close" }).last().click();
+
+await page.getByRole("button", { name: /Shopify matching rules/ }).click();
+await page.getByRole("button", { name: "Add rule" }).click();
+const rf = page.getByRole("dialog", { name: "Add matching rule" });
+await rf.getByLabel("Channel").selectOption({ label: "Postal.io / Postal" });
+await rf.getByLabel("Source field").selectOption("billing_company");
+await rf.getByLabel("Match value").fill("  postal.IO ");
+await rf.getByRole("button", { name: "Preview impact" }).click();
+await rf.getByText("orders change channel/state").waitFor();
+check("rule preview shows matching count before saving", (await rf.locator(".stats").innerText()).includes("1 orders match"));
+await page.screenshot({ path: `${OUT}/10-rule-preview.png` });
 await sign(page);
-await rf2.getByRole("button", { name: "Save" }).click();
-await rf2.getByText("already exists for this channel and month").waitFor();
-check("duplicate channel/month blocked; form input kept", (await rf2.getByLabel("Reporting month").inputValue()) === "2026-09");
-await rf2.getByRole("button", { name: "Cancel" }).click();
-await page.screenshot({ path: `${OUT}/08-revenue.png`, fullPage: true });
+await rf.getByRole("button", { name: "Confirm and apply" }).click();
+await page.locator("tbody tr", { hasText: "Postal.io / Postal" }).first().waitFor();
+const postalRow = await page.locator("table.dense tbody tr", { hasText: "Postal.io / Postal" }).first().innerText();
+check("assigned Shopify order appears in Postal revenue ($280.00, tax/Route/discount handled)", postalRow.includes("$280.00"), postalRow.replace(/\s+/g, " "));
+check("fees shown as not recorded when unknown", postalRow.includes("Fees not recorded"));
+
+await page.getByRole("button", { name: "Add manual entry" }).click();
+const me = page.getByRole("dialog", { name: "Add manual entry" });
+await me.getByLabel("Kind").selectOption("fee");
+await me.getByLabel("Channel").selectOption({ label: "Postal.io / Postal" });
+await me.getByLabel("Reporting month").fill("2026-09");
+await me.getByLabel("Marketplace fees (USD)").fill("35.00");
+await me.getByLabel("Reference").fill("EXAMPLE-STATEMENT-1");
+await me.getByLabel("Reason").fill("Example only (screenshot): fee from partner statement");
+await sign(page);
+await me.getByRole("button", { name: "Save" }).click();
+await page.locator("table.dense tbody tr", { hasText: "$245.00" }).first().waitFor();
+check("recorded fee gives revenue after fees", true);
+await page.screenshot({ path: `${OUT}/11-revenue.png`, fullPage: true });
 
 // ---- Mobile
 const m = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true });
 await m.goto(BASE);
 await m.locator("tbody tr").first().waitFor();
-await m.screenshot({ path: `${OUT}/09-mobile-marketplaces.png`, fullPage: true });
+await m.screenshot({ path: `${OUT}/12-mobile-marketplaces.png`, fullPage: true });
 const overflow = await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
 check("mobile: no horizontal page scroll", !overflow);
 await m.getByRole("button", { name: "Snappy" }).count().then(async (n) => n || (await m.getByLabel("Show inactive marketplaces").check()));
 await m.getByRole("button", { name: "Reachdesk" }).click();
 await m.getByRole("dialog").getByText("Requirements").first().waitFor();
-await m.screenshot({ path: `${OUT}/10-mobile-detail.png`, fullPage: false });
+await m.screenshot({ path: `${OUT}/12b-mobile-detail.png`, fullPage: false });
 await m.goto(`${BASE}/?tab=pricing`);
 await m.locator("tbody tr").first().waitFor();
-await m.screenshot({ path: `${OUT}/11-mobile-pricing.png`, fullPage: true });
+await m.screenshot({ path: `${OUT}/13-mobile-pricing.png`, fullPage: true });
 check("mobile pricing: no horizontal page scroll", !(await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)));
+await m.getByRole("button", { name: "Add pricing record" }).click();
+await m.getByRole("dialog", { name: "Add pricing record" }).getByLabel("Channel").selectOption({ label: "Direct website" });
+await m.screenshot({ path: `${OUT}/14-mobile-pricing-form.png` });
+check("mobile pricing form: no horizontal page scroll", !(await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)));
+await m.goto(`${BASE}/?tab=revenue`);
+await m.locator(".summary").waitFor();
+await m.screenshot({ path: `${OUT}/15-mobile-revenue.png`, fullPage: true });
+check("mobile revenue: no horizontal page scroll", !(await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)));
 
 await browser.close();
 let failed = 0;

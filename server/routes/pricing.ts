@@ -1,17 +1,18 @@
 import { z } from "zod";
 import type pg from "pg";
 import { Router, updateVersioned } from "../router";
-import { query, one, tx } from "../db";
+import { query, one, tx, getPool } from "../db";
 import { audit, type Actor } from "../audit";
 import { HttpError, badRequest, conflict, notFound } from "../http";
 import { parse, text, cents, pct, date, version, assertUuid, defined } from "../validate";
+import { currentReferences, resolveReferenceFields, overrideSchema, type Override } from "../lib/pricingRefs";
 
 export const FORMATS = ["individual", "corporate_separate_addresses", "bulk_one_location", "bulk_multiple_shipments"] as const;
 const EDITABLE = ["draft", "proposed"];
 
+// Retail reference and internal gift cost are NOT accepted as plain numbers: they come from the website
+// refresh and Product Master, or from an explicit manual override (value + reason + source + date).
 const priceFields = {
-  retail_ref_cents: cents,
-  internal_cost_cents: cents,
   cost_inclusions_note: text(1000),
   customer_discount_pct: pct,
   proposed_supplier_cents: cents,
@@ -34,14 +35,30 @@ const priceFields = {
   approved_by: text(80),
 };
 
+const overrides = { retail_override: overrideSchema, cost_override: overrideSchema };
+
 const createSchema = z.object({
   channel_id: z.string().uuid(),
   product_id: z.string().uuid(),
   status: z.enum(["draft", "proposed", "agreed"]).default("draft"),
   ...priceFields,
+  ...overrides,
 });
 
+/** Shared by the form API and the Excel import. */
+export type PricingInput = z.infer<typeof createSchema>;
+export const PRICE_FIELD_KEYS = Object.keys(priceFields);
+export { checkDates, checkProductRules };
+
 const TERM_KEYS = ["payment_terms", "shipping_responsibility", "dispatch_requirement"] as const;
+
+/** Reference values come from the sources; a typed value must be an explicit override. */
+function rejectTypedReferences(b: any) {
+  const bad = ["retail_ref_cents", "internal_cost_cents"].filter((k) => b && k in b);
+  if (bad.length) throw badRequest("Retail reference and internal gift cost are filled from the website and Product Master. To enter a value yourself, use a manual override with a reason, source and date.", {
+    fields: Object.fromEntries(bad.map((k) => [k, "Use retail_override / cost_override"])),
+  });
+}
 
 function checkDates(d: { effective_from?: string | null; effective_to?: string | null }) {
   if (d.effective_from && d.effective_to && d.effective_to < d.effective_from)
@@ -52,7 +69,7 @@ async function checkProductRules(c: pg.PoolClient, productId: string, format: st
   const p = await c.query("select family from products where id = $1", [productId]);
   if (!p.rowCount) throw badRequest("Unknown gift/variant", { fields: { product_id: "Unknown" } });
   if (p.rows[0].family === "pots_plus_succulents" && (format === "individual" || format === "corporate_separate_addresses"))
-    throw badRequest("Pots plus succulents are bulk-only (multiple shipments). Individual or separate-address recipient fulfillment is not allowed.", {
+    throw badRequest("Pots with succulents are bulk-only. Individual recipient shipping is unavailable, so individual or separate-address fulfillment is not allowed.", {
       fields: { fulfillment_format: "Bulk only for this offer" },
     });
 }
@@ -70,10 +87,13 @@ async function snapshotFields(c: pg.PoolClient, rec: any) {
   terms.fee_note = channel.fee_note != null ? { value: channel.fee_note, source: "channel_common" } : { value: null, source: "unspecified" };
   terms.channel_terms_note = channel.terms_note ?? null;
   terms.channel_terms_updated_at = channel.terms_updated_at ?? null;
+  const costDetail = typeof rec.cost_source_detail === "string" ? JSON.parse(rec.cost_source_detail) : rec.cost_source_detail;
+  const sourceCost = rec.cost_source === "product_master";
   return {
-    cost_snapshot_id: cost.rows[0]?.id ?? null,
-    snapshot_cost_cents: rec.internal_cost_cents ?? cost.rows[0]?.gift_cost_cents ?? null,
-    snapshot_retail_cents: rec.retail_ref_cents ?? prod.rows[0]?.web_price_cents ?? null,
+    // The record's own reference values (source-backed or manual) are what was agreed against.
+    cost_snapshot_id: sourceCost ? costDetail?.snapshot_id ?? null : rec.cost_source === "manual" ? null : cost.rows[0]?.id ?? null,
+    snapshot_cost_cents: rec.cost_source ? rec.internal_cost_cents ?? null : rec.internal_cost_cents ?? cost.rows[0]?.gift_cost_cents ?? null,
+    snapshot_retail_cents: rec.retail_source ? rec.retail_ref_cents ?? null : rec.retail_ref_cents ?? prod.rows[0]?.web_price_cents ?? null,
     terms_snapshot: JSON.stringify(terms),
   };
 }
@@ -95,6 +115,15 @@ async function loadForUpdate(c: pg.PoolClient, id: string) {
 }
 
 export function pricingRoutes(r: Router) {
+  /** Prefill for the pricing form: current retail, latest cost, channel defaults (read-only values). */
+  r.get("/pricing/references", async ({ query: q }) => {
+    const productId = q.get("product_id") ?? "";
+    assertUuid(productId);
+    const channelId = q.get("channel_id");
+    if (channelId) assertUuid(channelId);
+    return { references: await currentReferences(getPool(), productId, channelId) };
+  });
+
   r.get("/pricing", async ({ query: q }) => {
     const where = ["r.archived_at is null"];
     const params: unknown[] = [];
@@ -138,6 +167,7 @@ export function pricingRoutes(r: Router) {
   r.post("/pricing", async ({ body, actor }) => {
     const b = await body();
     const a = actor(b);
+    rejectTypedReferences(b);
     const d = parse(createSchema, b);
     checkDates(d);
     if (d.status === "agreed") {
@@ -155,14 +185,28 @@ export function pricingRoutes(r: Router) {
     const b = await body();
     const a = actor(b);
     assertUuid(params.id);
+    rejectTypedReferences(b);
     const d = defined(
-      parse(z.object({ ...priceFields, fulfillment_format: priceFields.fulfillment_format.optional(), status: z.enum(["draft", "proposed", "agreed"]).optional(), version }), b),
+      parse(z.object({ ...priceFields, ...overrides, fulfillment_format: priceFields.fulfillment_format.optional(), status: z.enum(["draft", "proposed", "agreed"]).optional(), version }), b),
     ) as any;
     return tx(async (c) => {
       const cur = await loadForUpdate(c, params.id);
       if (!EDITABLE.includes(cur.status)) throw new HttpError(409, "immutable", "Agreed and active prices are immutable. Use Revise price to create a new version.");
       if (cur.version !== d.version) throw conflict();
-      const { version: v, ...fields } = d;
+      const { version: v, retail_override, cost_override, ...fields } = d;
+      // Source-backed references refresh to the current values on each draft save; a manual value stays
+      // manual unless the request clears it (override: null) or replaces it.
+      const keepRetail = retail_override === undefined && cur.retail_source === "manual"
+        ? { cents: Number(cur.retail_ref_cents), ...cur.retail_source_detail } : retail_override ?? null;
+      const keepCost = cost_override === undefined && cur.cost_source === "manual"
+        ? { cents: Number(cur.internal_cost_cents), ...cur.cost_source_detail } : cost_override ?? null;
+      const refFields = (await resolveReferenceFields(c, cur.product_id, keepRetail as Override, keepCost as Override)).fields;
+      Object.assign(fields, refFields);
+      if (refFields.cost_source === "product_master" && !fields.cost_inclusions_note && !cur.cost_inclusions_note) {
+        const det = JSON.parse(String(refFields.cost_source_detail));
+        const inc = [...new Set((det.components ?? []).map((x: any) => x.includes).filter(Boolean))].join("; ");
+        if (inc) fields.cost_inclusions_note = inc;
+      }
       const merged = { ...cur, ...fields };
       checkDates(merged);
       await checkProductRules(c, merged.product_id, merged.fulfillment_format);
@@ -181,7 +225,8 @@ export function pricingRoutes(r: Router) {
     const b = await body();
     const a = actor(b);
     assertUuid(params.id);
-    const overrides = defined(parse(z.object({ ...priceFields, fulfillment_format: priceFields.fulfillment_format.optional() }).partial(), b)) as any;
+    rejectTypedReferences(b);
+    const changes = defined(parse(z.object({ ...priceFields, ...overrides, fulfillment_format: priceFields.fulfillment_format.optional() }).partial(), b)) as any;
     return tx(async (c) => {
       const prev = await loadForUpdate(c, params.id);
       if (EDITABLE.includes(prev.status)) throw badRequest("Draft and proposed prices can be edited directly.");
@@ -189,7 +234,9 @@ export function pricingRoutes(r: Router) {
         channel_id: prev.channel_id, product_id: prev.product_id, status: "draft",
         ...Object.fromEntries(Object.keys(priceFields).map((k) => [k, prev[k]])),
         effective_from: null, effective_to: null, approved_by: null,
-        ...overrides,
+        // A revision takes the CURRENT source values unless the request supplies a manual override.
+        retail_override: null, cost_override: null,
+        ...changes,
       };
       checkDates(copy);
       await checkProductRules(c, copy.product_id, copy.fulfillment_format);
@@ -206,39 +253,7 @@ export function pricingRoutes(r: Router) {
     return tx(async (c) => {
       const rec = await loadForUpdate(c, params.id);
       if (rec.version !== d.version) throw conflict();
-      if (!["proposed", "agreed"].includes(rec.status)) throw badRequest(`A ${rec.status} price cannot be activated.`);
-      if (rec.agreed_price_cents == null) throw badRequest("Activation needs an agreed price.", { fields: { agreed_price_cents: "Required" } });
-      const from = rec.effective_from ?? d.effective_from ?? null;
-      const to = rec.effective_to ?? d.effective_to ?? null;
-      const approvedBy = rec.approved_by ?? d.approved_by ?? null;
-      if (!from) throw badRequest("Activation needs an effective start date.", { fields: { effective_from: "Required" } });
-      if (!approvedBy) throw badRequest("Activation needs an approver name.", { fields: { approved_by: "Required" } });
-      checkDates({ effective_from: from, effective_to: to });
-      await checkProductRules(c, rec.product_id, rec.fulfillment_format);
-
-      // Supersede the current active price for the same channel + variant + format (closing its period),
-      // reject anything else that would overlap.
-      const overlapping = await c.query(
-        `select * from pricing_records where status = 'active' and id <> $1 and channel_id = $2 and product_id = $3 and fulfillment_format = $4
-           and daterange(effective_from, effective_to, '[]') && daterange($5::date, $6::date, '[]') for update`,
-        [rec.id, rec.channel_id, rec.product_id, rec.fulfillment_format, from, to],
-      );
-      for (const o of overlapping.rows) {
-        if (o.effective_from >= from)
-          throw new HttpError(409, "overlap", `An active price starting ${o.effective_from} already covers this period. Choose a later effective start.`);
-        const closeTo = (await c.query("select ($1::date - 1)::text as d", [from])).rows[0].d;
-        const closed = await c.query(
-          "update pricing_records set status = 'expired', effective_to = $2, superseded_by_id = $3, updated_at = now(), version = version + 1 where id = $1 returning *",
-          [o.id, o.effective_to && o.effective_to < closeTo ? o.effective_to : closeTo, rec.id],
-        );
-        await audit(c, a, { entityType: "pricing_record", entityId: o.id, action: "superseded", before: { status: o.status, effective_to: o.effective_to }, after: { status: "expired", effective_to: closed.rows[0].effective_to, superseded_by_id: rec.id } });
-      }
-      const snaps = rec.terms_snapshot ? {} : await snapshotFields(c, rec);
-      const fields: Record<string, unknown> = { status: "active", effective_from: from, effective_to: to, approved_by: approvedBy, ...snaps };
-      if (!rec.approved_at) fields.approved_at = new Date();
-      const { before, after } = await updateVersioned(c, "pricing_records", rec.id, rec.version, fields);
-      await audit(c, a, { entityType: "pricing_record", entityId: rec.id, action: "activate", before: { status: before.status }, after: { status: "active", effective_from: from, effective_to: to, approved_by: approvedBy } });
-      return { record: after, superseded: overlapping.rows.map((o) => o.id) };
+      return activateRecord(c, rec, d, a);
     });
   });
 
@@ -260,11 +275,19 @@ export function pricingRoutes(r: Router) {
   });
 }
 
-async function insertRecord(c: pg.PoolClient, d: any, a: Actor, previousId: string | null) {
-  const cols = ["channel_id", "product_id", "status", ...Object.keys(priceFields), "entered_by", "entered_auth_subject", "previous_record_id"];
-  const values: any = { ...d, entered_by: a.signer, entered_auth_subject: a.sub, previous_record_id: previousId };
+export async function insertRecord(c: pg.PoolClient, d: any, a: Actor, previousId: string | null, opts: { importBatchId?: string; importRowRef?: string; importLabel?: string } = {}) {
+  const { fields: refFields } = await resolveReferenceFields(c, d.product_id, d.retail_override ?? null, d.cost_override ?? null, opts.importLabel);
+  const cols = ["channel_id", "product_id", "status", ...Object.keys(priceFields), "entered_by", "entered_auth_subject", "previous_record_id",
+    ...Object.keys(refFields), "import_batch_id", "import_row_ref"];
+  const values: any = { ...d, ...refFields, entered_by: a.signer, entered_auth_subject: a.sub, previous_record_id: previousId,
+    import_batch_id: opts.importBatchId ?? null, import_row_ref: opts.importRowRef ?? null };
+  if (refFields.cost_source === "product_master" && !values.cost_inclusions_note) {
+    const det = JSON.parse(String(refFields.cost_source_detail));
+    const inc = [...new Set((det.components ?? []).map((x: any) => x.includes).filter(Boolean))].join("; ");
+    if (inc) values.cost_inclusions_note = inc;
+  }
   if (d.status === "agreed") {
-    Object.assign(values, await snapshotFields(c, d), { approved_at: new Date() });
+    Object.assign(values, await snapshotFields(c, values), { approved_at: new Date() });
     cols.push("cost_snapshot_id", "snapshot_cost_cents", "snapshot_retail_cents", "terms_snapshot", "approved_at");
   }
   const ins = await c.query(
@@ -275,3 +298,42 @@ async function insertRecord(c: pg.PoolClient, d: any, a: Actor, previousId: stri
   return ins.rows[0];
 }
 
+
+/** Activate an agreed (or proposed-with-agreed-price) record; supersedes an earlier active price for the same key. */
+export async function activateRecord(c: pg.PoolClient, rec: any, d: { effective_from?: string | null; effective_to?: string | null; approved_by?: string | null }, a: Actor) {
+  if (!["proposed", "agreed"].includes(rec.status)) throw badRequest(`A ${rec.status} price cannot be activated.`);
+  if (rec.agreed_price_cents == null) throw badRequest("Activation needs an agreed price.", { fields: { agreed_price_cents: "Required" } });
+  const from = rec.effective_from ?? d.effective_from ?? null;
+  const to = rec.effective_to ?? d.effective_to ?? null;
+  const approvedBy = rec.approved_by ?? d.approved_by ?? null;
+  if (!from) throw badRequest("Activation needs an effective start date.", { fields: { effective_from: "Required" } });
+  if (!approvedBy) throw badRequest("Activation needs an approver name.", { fields: { approved_by: "Required" } });
+  checkDates({ effective_from: from, effective_to: to });
+  await checkProductRules(c, rec.product_id, rec.fulfillment_format);
+
+  // Supersede the current active price for the same channel + variant + format (closing its period),
+  // reject anything else that would overlap.
+  const overlapping = await c.query(
+    `select * from pricing_records where status = 'active' and id <> $1 and channel_id = $2 and product_id = $3 and fulfillment_format = $4
+       and daterange(effective_from, effective_to, '[]') && daterange($5::date, $6::date, '[]') for update`,
+    [rec.id, rec.channel_id, rec.product_id, rec.fulfillment_format, from, to],
+  );
+  for (const o of overlapping.rows) {
+    if (o.effective_from >= from)
+      throw new HttpError(409, "overlap", `An active price starting ${o.effective_from} already covers this period. Choose a later effective start.`);
+    const closeTo = (await c.query("select ($1::date - 1)::text as d", [from])).rows[0].d;
+    const closed = await c.query(
+      "update pricing_records set status = 'expired', effective_to = $2, superseded_by_id = $3, updated_at = now(), version = version + 1 where id = $1 returning *",
+      [o.id, o.effective_to && o.effective_to < closeTo ? o.effective_to : closeTo, rec.id],
+    );
+    await audit(c, a, { entityType: "pricing_record", entityId: o.id, action: "superseded", before: { status: o.status, effective_to: o.effective_to }, after: { status: "expired", effective_to: closed.rows[0].effective_to, superseded_by_id: rec.id } });
+  }
+  const snaps = rec.terms_snapshot ? {} : await snapshotFields(c, rec);
+  const fields: Record<string, unknown> = { status: "active", effective_from: from, effective_to: to, approved_by: approvedBy, ...snaps };
+  if (!rec.approved_at) fields.approved_at = new Date();
+  const { before, after } = await updateVersioned(c, "pricing_records", rec.id, rec.version, fields);
+  await audit(c, a, { entityType: "pricing_record", entityId: rec.id, action: "activate", before: { status: before.status }, after: { status: "active", effective_from: from, effective_to: to, approved_by: approvedBy } });
+  return { record: after, superseded: overlapping.rows.map((o) => o.id) };
+}
+
+export { snapshotFields };
