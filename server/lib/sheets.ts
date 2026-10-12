@@ -1,17 +1,76 @@
-// Read-only Google Sheets access, server-side only.
-// Default: a Google service account (GOOGLE_SERVICE_ACCOUNT_JSON) that the team shares onto the
-// Product Master sheet as Viewer. The sheet never needs to be public. Swap the reader if the team
-// prefers explicit OAuth Sheets authorization instead.
+// Read-only Product Master access, server-side only.
+//
+// Default ("public" mode): the sheet is shared "Anyone with the link can view", so each vendor tab is read
+// from Google's CSV export for that tab (needs the tab's gid). No credentials are involved.
+// Optional: if GOOGLE_SERVICE_ACCOUNT_JSON is set, the Sheets API is used instead (for a private sheet
+// shared with the service account as Viewer).
 import { SignJWT, importPKCS8 } from "jose";
 
-export type SheetsReader = (spreadsheetId: string, range: string) => Promise<unknown[][]>;
+export type TabRef = { spreadsheetId: string; tabName: string; gid: string | null; headerRow: number; lastColumn: string };
+/** Returns rows starting at the header row (first row = headers). */
+export type SheetsReader = (tab: TabRef) => Promise<unknown[][]>;
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// --------------------------------------------------------------- public CSV
+/** RFC 4180 CSV parser (quoted fields, escaped quotes, newlines inside quotes). */
+export function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; } else quoted = false;
+      } else field += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ",") { row.push(field); field = ""; }
+    else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      row.push(field); rows.push(row); row = []; field = "";
+    } else field += ch;
+  }
+  if (field !== "" || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+const publicReader: SheetsReader = async (tab) => {
+  if (!tab.gid || !/^\d{1,12}$/.test(tab.gid))
+    throw new Error(`Tab "${tab.tabName}" needs its gid (the number after "gid=" in the tab's link).`);
+  const url = `https://docs.google.com/spreadsheets/d/${tab.spreadsheetId}/export?format=csv&gid=${tab.gid}`;
+  let last = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal, redirect: "follow" });
+      const type = res.headers.get("content-type") ?? "";
+      if (res.ok && type.includes("text/csv")) {
+        const rows = parseCsv(await res.text());
+        return rows.slice(tab.headerRow - 1);
+      }
+      // A non-CSV 200 is Google's sign-in page: the sheet/tab is not publicly viewable.
+      if (res.ok || res.status === 401 || res.status === 403 || res.status === 404)
+        throw Object.assign(new Error(`Tab "${tab.tabName}" is not publicly readable (check "Anyone with the link can view" and the gid).`), { final: true });
+      last = `HTTP ${res.status}`;
+    } catch (e: any) {
+      if (e?.final) throw e;
+      last = e?.name === "AbortError" ? "timeout" : String(e?.message ?? e);
+    } finally {
+      clearTimeout(t);
+    }
+    await sleep(700 * (attempt + 1));
+  }
+  throw new Error(`Could not read tab "${tab.tabName}" (${last}).`);
+};
+
+// -------------------------------------------------- optional: service account
 let token: { value: string; exp: number } | null = null;
 
-async function serviceAccountToken(): Promise<string> {
+async function serviceAccountToken(raw: string): Promise<string> {
   if (token && token.exp > Date.now() + 60_000) return token.value;
-  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!raw) throw new Error("Product Master access is not configured (GOOGLE_SERVICE_ACCOUNT_JSON missing).");
   const sa = JSON.parse(raw) as { client_email: string; private_key: string };
   const key = await importPKCS8(sa.private_key, "RS256");
   const now = Math.floor(Date.now() / 1000);
@@ -33,9 +92,10 @@ async function serviceAccountToken(): Promise<string> {
   return token.value;
 }
 
-const defaultReader: SheetsReader = async (spreadsheetId, range) => {
-  const t = await serviceAccountToken();
-  const u = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}?valueRenderOption=UNFORMATTED_VALUE&majorDimension=ROWS`;
+const serviceAccountReader = (raw: string): SheetsReader => async (tab) => {
+  const t = await serviceAccountToken(raw);
+  const range = a1Range(tab.tabName, tab.headerRow, tab.lastColumn);
+  const u = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(tab.spreadsheetId)}/values/${encodeURIComponent(range)}?valueRenderOption=UNFORMATTED_VALUE&majorDimension=ROWS`;
   const res = await fetch(u, { headers: { authorization: `Bearer ${t}` } });
   if (res.status === 403 || res.status === 404) throw new Error(`No read access to the sheet/tab (HTTP ${res.status}). Share it with the service account as Viewer and check the tab name.`);
   if (!res.ok) throw new Error(`Sheets read failed (HTTP ${res.status})`);
@@ -43,12 +103,15 @@ const defaultReader: SheetsReader = async (spreadsheetId, range) => {
   return j.values ?? [];
 };
 
-let reader: SheetsReader = defaultReader;
+// ------------------------------------------------------------------- facade
+let override: SheetsReader | null = null;
 export function setSheetsReader(r: SheetsReader | null) {
-  reader = r ?? defaultReader;
+  override = r;
 }
-export function readSheet(spreadsheetId: string, range: string) {
-  return reader(spreadsheetId, range);
+export function readSheet(tab: TabRef) {
+  if (override) return override(tab);
+  const sa = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  return sa ? serviceAccountReader(sa)(tab) : publicReader(tab);
 }
 
 export function a1Range(tab: string, headerRow: number, lastColumn: string) {
@@ -58,5 +121,11 @@ export function a1Range(tab: string, headerRow: number, lastColumn: string) {
 /** Accepts a spreadsheet link or bare ID; returns the ID or null. */
 export function spreadsheetIdFrom(input: string): string | null {
   const m = /\/spreadsheets\/d\/([A-Za-z0-9_-]{20,100})/.exec(input) ?? /^([A-Za-z0-9_-]{20,100})$/.exec(input.trim());
+  return m ? m[1] : null;
+}
+
+/** The tab gid from a pasted tab link (…#gid=123 or ?gid=123), if present. */
+export function gidFrom(input: string): string | null {
+  const m = /[#?&]gid=(\d{1,12})/.exec(input);
   return m ? m[1] : null;
 }

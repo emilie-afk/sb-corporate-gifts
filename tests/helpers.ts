@@ -2,7 +2,6 @@ import { createApp } from "../server/app";
 import { issueSession } from "../server/auth";
 import { getPool } from "../server/db";
 import { migrate } from "../scripts/migrate";
-import { seed } from "../scripts/seed";
 
 // Test-only placeholder identities (not real logins).
 export const APPROVED = "approved-login@example.test";
@@ -18,7 +17,6 @@ export async function resetDb() {
   const pool = getPool();
   await pool.query("drop schema public cascade; create schema public;");
   await migrate(false);
-  await seed(false);
   cookie = `sbg_session=${await issueSession({ sub: "google-sub-123", email: APPROVED })}`;
 }
 
