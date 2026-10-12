@@ -1,11 +1,18 @@
-// Reproducible, idempotent seed. Usage: DATABASE_URL=... npm run db:seed
+// Initial data, applied exactly once per database (tracked as 'seed_initial_data' in schema_migrations).
+// Runs automatically from scripts/migrate.ts. Never re-applied, so later team edits/renames are never undone.
 import { tx, closePool } from "../server/db";
 import { DEFAULT_MILESTONES, PROVIDERS, SEED_PRODUCTS } from "../db/seed/providers";
 
 const SEED_SIGNER = "System seed";
 
+export const SEED_VERSION = "seed_initial_data";
+
 export async function seed(log = true) {
-  await tx(async (c) => {
+  const applied = await tx(async (c) => {
+    await c.query("create table if not exists schema_migrations (version text primary key, applied_at timestamptz not null default now())");
+    await c.query("lock table schema_migrations in exclusive mode");
+    const done = await c.query("select 1 from schema_migrations where version = $1", [SEED_VERSION]);
+    if (done.rowCount) return false;
     // Direct website: a sales channel, not a marketplace record (no setup checklist).
     await c.query(
       `insert into channels (name, type, default_discount_pct, corporate_moq, terms_note, terms_updated_by, terms_updated_at)
@@ -98,8 +105,10 @@ export async function seed(log = true) {
        where not exists (select 1 from collection_references where url = 'https://succulentsbox.com/collections/bulk-corporate-plant-gifts')`,
       [SEED_SIGNER],
     );
+    await c.query("insert into schema_migrations (version) values ($1)", [SEED_VERSION]);
+    return true;
   });
-  if (log) console.log("seed complete");
+  if (log) console.log(applied ? "initial data applied" : "initial data already present — skipped");
 }
 
 if (process.argv[1]?.endsWith("seed.ts")) {

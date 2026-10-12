@@ -25,10 +25,13 @@ export type Link = {
   quantity_per_gift: number | null;
 };
 
+/** Header names are compared with whitespace collapsed (sheet headers often contain line breaks). */
+export const normCol = (s: unknown) => String(s ?? "").replace(/\s+/g, " ").trim();
+
 export type ParsedSheet = { headers: string[]; rows: { rowNumber: number; cells: Record<string, unknown> }[] };
 
 export function parseSheet(values: unknown[][], headerRow: number): ParsedSheet {
-  const headers = (values[0] ?? []).map((h) => String(h ?? "").trim());
+  const headers = (values[0] ?? []).map(normCol);
   const rows = values.slice(1).map((r, i) => ({
     rowNumber: headerRow + 1 + i,
     cells: Object.fromEntries(headers.map((h, j) => [h, r[j] ?? null])),
@@ -38,7 +41,7 @@ export function parseSheet(values: unknown[][], headerRow: number): ParsedSheet 
 
 export function missingHeaders(m: Mapping, headers: string[]) {
   const need = [...m.match_columns, m.cost_column, ...(m.quantity_column ? [m.quantity_column] : []), ...(m.retail_column ? [m.retail_column] : [])];
-  return need.filter((h) => !headers.includes(h));
+  return need.filter((h) => !headers.includes(normCol(h)));
 }
 
 /** Strict non-negative decimal parse: "$4.00", "1,234.5", 4 → number; anything else → null. */
@@ -59,9 +62,10 @@ export function parseQuantity(v: unknown): number | null {
 const norm = (v: unknown) => String(v ?? "").trim().toLowerCase();
 
 export function findRows(sheet: ParsedSheet, m: Mapping, matchValues: Record<string, string>) {
-  const keys = m.match_columns;
-  if (keys.some((k) => !norm(matchValues[k]))) return { rows: [], error: "Mapping is missing a value for every match column" };
-  const rows = sheet.rows.filter((r) => keys.every((k) => norm(r.cells[k]) === norm(matchValues[k])));
+  const mv = Object.fromEntries(Object.entries(matchValues).map(([k, v]) => [normCol(k), v]));
+  const keys = m.match_columns.map(normCol);
+  if (keys.some((k) => !norm(mv[k]))) return { rows: [], error: "Mapping is missing a value for every match column" };
+  const rows = sheet.rows.filter((r) => keys.every((k) => norm(r.cells[k]) === norm(mv[k])));
   return { rows, error: null as string | null };
 }
 
@@ -93,7 +97,7 @@ export function computeComponent(sheet: ParsedSheet, m: Mapping, link: Link): Co
   if (rows.length === 0) return { ...base, error: "No row matches the mapped identifier" };
   if (rows.length > 1) return { ...base, error: `Duplicate match: rows ${rows.map((r) => r.rowNumber).join(", ")}` };
   const row = rows[0];
-  const cost = parseAmount(row.cells[m.cost_column]);
+  const cost = parseAmount(row.cells[normCol(m.cost_column)]);
   const withRow = { ...base, row_locator: row.rowNumber };
   if (cost === null) return { ...withRow, error: `Invalid cost value in "${m.cost_column}"` };
   if (m.cost_basis === "per_pack") {
@@ -102,7 +106,7 @@ export function computeComponent(sheet: ParsedSheet, m: Mapping, link: Link): Co
   let qty: number | null = null;
   let qsrc: ComponentResult["quantity_source"] = null;
   if (link.quantity_per_gift) { qty = link.quantity_per_gift; qsrc = "link"; }
-  else if (m.quantity_column) { qty = parseQuantity(row.cells[m.quantity_column]); qsrc = qty ? "sheet" : null; }
+  else if (m.quantity_column) { qty = parseQuantity(row.cells[normCol(m.quantity_column)]); qsrc = qty ? "sheet" : null; }
   if (!qty) return { ...withRow, source_cost: cost, error: "Missing pack quantity — confirm quantity per gift" };
   return { ...withRow, source_cost: cost, quantity: qty, quantity_source: qsrc, component_cost: round4(cost * qty) };
 }

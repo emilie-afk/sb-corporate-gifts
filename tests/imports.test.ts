@@ -202,3 +202,24 @@ describe("Shopify website refresh (fake storefront)", () => {
     expect(p2.archived_at).toBeNull(); // never deleted or archived
   });
 });
+
+describe("public Product Master reading", () => {
+  it("parses CSV with quoted commas, quotes and line breaks", async () => {
+    const { parseCsv } = await import("../server/lib/sheets");
+    expect(parseCsv('a,"b, c","say ""hi""","line1\nline2"\r\n1,2,3,4\n')).toEqual([
+      ["a", "b, c", 'say "hi"', "line1\nline2"],
+      ["1", "2", "3", "4"],
+    ]);
+  });
+  it("matches headers that contain line breaks and extra spaces", () => {
+    const sheet = parseSheet([["SKU", "Cost \n (what vendor receives)"], ["W-1", "$22.50"]], 1);
+    const c = computeComponent(sheet, M({ cost_column: "Cost (what vendor receives)", cost_basis: "per_pack" }), L({ match_values: { SKU: "W-1" } }));
+    expect(giftCost([c]).cents).toBe(2250);
+  });
+  it("takes the tab gid from a pasted tab link and requires it for public reads", async () => {
+    const { gidFrom } = await import("../server/lib/sheets");
+    expect(gidFrom("https://docs.google.com/spreadsheets/d/abc/edit?gid=1052830815#gid=1052830815")).toBe("1052830815");
+    const { readSheet } = await import("../server/lib/sheets");
+    await expect(readSheet({ spreadsheetId: "x".repeat(30), tabName: "T", gid: null, headerRow: 1, lastColumn: "Z" })).rejects.toThrow(/gid/);
+  });
+});

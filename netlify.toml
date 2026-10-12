@@ -3,6 +3,12 @@
   publish = "dist"
   functions = "netlify/functions"
 
+# Production builds apply pending migrations + initial data to the Neon database first.
+# A failure stops the deploy, so the live site never runs against an unmigrated schema.
+# Deploy previews / branch deploys only build (they never touch the production database).
+[context.production]
+  command = "npm run db:migrate && npm run build"
+
 [functions]
   node_bundler = "esbuild"
 

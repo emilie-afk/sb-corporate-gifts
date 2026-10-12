@@ -6,8 +6,17 @@ import { audit } from "../audit";
 import { HttpError, badRequest, notFound } from "../http";
 import { parse, text, reqText, version, assertUuid, defined } from "../validate";
 import { fetchCatalogPage, fetchCollectionProductIds, MAX_PAGES, SHOPIFY_ORIGIN, type CatalogItem } from "../lib/shopify";
-import { readSheet, a1Range, spreadsheetIdFrom } from "../lib/sheets";
-import { parseSheet, missingHeaders, computeComponent, giftCost, type Mapping, type Link } from "../lib/costs";
+import { readSheet, spreadsheetIdFrom, gidFrom, type TabRef } from "../lib/sheets";
+import { parseSheet, missingHeaders, computeComponent, giftCost, normCol, type Mapping, type Link } from "../lib/costs";
+
+const tabRef = (m: any): TabRef => ({ spreadsheetId: m.spreadsheet_id, tabName: m.tab_name, gid: m.tab_gid, headerRow: m.header_row, lastColumn: m.last_column });
+
+/** Store column names with whitespace collapsed so they match the sheet headers exactly. */
+function normalizeColumns(d: any) {
+  if (Array.isArray(d.match_columns)) d.match_columns = d.match_columns.map(normCol).filter(Boolean);
+  for (const k of ["cost_column", "quantity_column", "retail_column"]) if (typeof d[k] === "string") d[k] = normCol(d[k]) || null;
+  return d;
+}
 
 const PREVIEW_TTL_MS = 60 * 60 * 1000;
 
@@ -216,7 +225,7 @@ export function importRoutes(r: Router) {
     spreadsheet: reqText(500),
     vendor: reqText(120),
     tab_name: reqText(200),
-    tab_gid: text(40),
+    tab_gid: z.union([z.string().trim().regex(/^\d{0,12}$/, "Digits only (the number after gid=)"), z.null()]).optional().transform((v) => (v ? v : v === undefined ? undefined : null)),
     header_row: z.number().int().min(1).max(1000).default(1),
     last_column: z.string().regex(/^[A-Z]{1,3}$/).default("ZZ"),
     match_columns: z.array(z.string().trim().min(1).max(120)).min(1).max(4),
@@ -238,8 +247,9 @@ export function importRoutes(r: Router) {
   r.post("/sources", async ({ body, actor }) => {
     const b = await body();
     const a = actor(b);
-    const d = parse(mappingSchema, b);
+    const d = normalizeColumns(parse(mappingSchema, b));
     const sid = spreadsheetIdFrom(d.spreadsheet);
+    if (!d.tab_gid) d.tab_gid = gidFrom(d.spreadsheet);
     if (!sid) throw badRequest("Enter a Google Sheets link or spreadsheet ID.", { fields: { spreadsheet: "Not a spreadsheet link/ID" } });
     return tx(async (c) => {
       const ins = await c.query(
@@ -258,17 +268,18 @@ export function importRoutes(r: Router) {
     const b = await body();
     const a = actor(b);
     assertUuid(params.id);
-    const d = defined(parse(mappingSchema.partial().extend({ version }), b)) as any;
+    const d = normalizeColumns(defined(parse(mappingSchema.partial().extend({ version }), b)) as any);
     const { version: v, spreadsheet, ...fields } = d;
     if (spreadsheet !== undefined) {
       const sid = spreadsheetIdFrom(spreadsheet);
       if (!sid) throw badRequest("Enter a Google Sheets link or spreadsheet ID.", { fields: { spreadsheet: "Not a spreadsheet link/ID" } });
       fields.spreadsheet_id = sid;
+      if (!fields.tab_gid && gidFrom(spreadsheet)) fields.tab_gid = gidFrom(spreadsheet);
     }
     return tx(async (c) => {
       const cur = await c.query("select * from source_mappings where id = $1", [params.id]);
       if (!cur.rowCount) throw notFound("Source mapping");
-      const mappingKeys = ["spreadsheet_id", "tab_name", "header_row", "last_column", "match_columns", "cost_column", "cost_basis", "quantity_column"];
+      const mappingKeys = ["spreadsheet_id", "tab_name", "tab_gid", "header_row", "last_column", "match_columns", "cost_column", "cost_basis", "quantity_column"];
       if (mappingKeys.some((k) => k in fields && JSON.stringify(fields[k]) !== JSON.stringify(cur.rows[0][k]))) fields.mapping_version = cur.rows[0].mapping_version + 1;
       fields.updated_by = a.signer;
       const { before, after } = await updateVersioned(c, "source_mappings", params.id, v, fields);
@@ -285,13 +296,13 @@ export function importRoutes(r: Router) {
     const m = await one("select * from source_mappings where id = $1", [params.id]);
     if (!m) throw notFound("Source mapping");
     let values: unknown[][];
-    try { values = await readSheet(m.spreadsheet_id, a1Range(m.tab_name, m.header_row, m.last_column)); }
+    try { values = await readSheet(tabRef(m)); }
     catch (e: any) { throw new HttpError(502, "sheet_access", e.message); }
     const sheet = parseSheet(values, m.header_row);
     const missing = missingHeaders(m, sheet.headers);
-    const cols = [...m.match_columns, m.cost_column, m.quantity_column, m.retail_column].filter(Boolean) as string[];
+    const cols = [...m.match_columns, m.cost_column, m.quantity_column, m.retail_column].filter(Boolean).map(normCol);
     const rows = sheet.rows
-      .filter((r) => !q || m.match_columns.some((k: string) => String(r.cells[k] ?? "").toLowerCase().includes(q)))
+      .filter((r) => !q || m.match_columns.some((k: string) => String(r.cells[normCol(k)] ?? "").toLowerCase().includes(q)))
       .slice(0, 50)
       .map((r) => ({ rowNumber: r.rowNumber, cells: Object.fromEntries(cols.map((k) => [k, r.cells[k] ?? null])) }));
     return { headers: sheet.headers, missing_headers: missing, rows };
@@ -366,7 +377,7 @@ export function importRoutes(r: Router) {
     for (const m of mappings) {
       if (!links.some((l) => l.source_mapping_id === m.id)) continue;
       try {
-        const sheet = parseSheet(await readSheet((m as any).spreadsheet_id, a1Range(m.tab_name, m.header_row, (m as any).last_column)), m.header_row);
+        const sheet = parseSheet(await readSheet(tabRef(m)), m.header_row);
         const missing = missingHeaders(m, sheet.headers);
         if (missing.length) { sheetErrors.push({ mapping: m.label, message: `Missing columns: ${missing.join(", ")}` }); sheets.set(m.id, null); }
         else sheets.set(m.id, sheet);
