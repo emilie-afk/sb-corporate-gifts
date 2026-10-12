@@ -12,7 +12,9 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "exceljs": "4.4.0",
     "jose": "^6.2.12",
+    "jszip": "3.10.2",
     "pg": "^8.23.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
@@ -30,5 +32,8 @@
     "typescript": "^7.0.2",
     "vite": "^8.3.4",
     "vitest": "^5.0.3"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
   }
 }

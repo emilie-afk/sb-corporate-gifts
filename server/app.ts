@@ -6,6 +6,9 @@ import { productRoutes } from "./routes/products";
 import { pricingRoutes } from "./routes/pricing";
 import { revenueRoutes } from "./routes/revenue";
 import { importRoutes } from "./routes/imports";
+import { pricingImportRoutes } from "./routes/pricingImport";
+import { revenueShopifyRoutes } from "./routes/revenueShopify";
+import { handleIngest } from "./ingestEndpoint";
 
 const router = new Router();
 marketplaceRoutes(router);
@@ -13,19 +16,24 @@ productRoutes(router);
 pricingRoutes(router);
 revenueRoutes(router);
 importRoutes(router);
+pricingImportRoutes(router);
+revenueShopifyRoutes(router);
 
 export type AppOptions = {
   /** LOCAL DEVELOPMENT ONLY — injected by scripts/dev-server.ts, never by the Netlify function. */
   devSession?: Session;
 };
 
-const MAX_BODY = 256 * 1024;
+const MAX_BODY = 6 * 1024 * 1024; // Netlify synchronous function payload limit
 
 export function createApp(opts: AppOptions = {}) {
   return async function handle(req: Request): Promise<Response> {
     try {
       const url = new URL(req.url);
       const path = url.pathname.replace(/^\/api/, "") || "/";
+
+      // ---- collector ingestion (own secret, no Google session)
+      if (path === "/ingest/shopify-orders") return await handleIngest(req);
 
       // ---- auth endpoints (public)
       if (path === "/auth/login" && req.method === "GET") return await loginRedirect(req);

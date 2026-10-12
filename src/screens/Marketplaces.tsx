@@ -405,7 +405,7 @@ function Proposals({ mid, items, onChanged }: { mid: string; items: any[]; onCha
               {p.product_family && <Pill>{FAMILY_LABEL[p.product_family]}</Pill>}
               <span className="hint">Card: {TRI_LABEL[p.card_eligible]} · Plants: {TRI_LABEL[p.plants_included]} · Individual fulfillment: {TRI_LABEL[p.individual_recipient_fulfillment]}</span>
             </div>
-            {p.product_family === "pots_plus_succulents" && <div className="alert warn small">Bulk only — delivered in multiple shipments. SB does not fulfill to individual recipients.</div>}
+            {p.product_family === "pots_plus_succulents" && <div className="alert warn small">Complete gift, bulk orders only. Individual recipient shipping is unavailable.</div>}
             {p.offer_note && <div className="pre">{p.offer_note}</div>}
             <div className="hint">
               {p.submitted_on && <>Submitted {p.submitted_on} · </>}
@@ -443,7 +443,7 @@ function ProposalForm({ mid, p, onClose, onSaved }: { mid: string; p: any; onClo
         <Field label="Gift / variant" required wide error={s.fe("product_id")}>
           <ProductPicker value={product} onChange={(x) => { setProduct(x); if (x?.family === "pots_plus_succulents") setF({ ...f, offer_type: "bulk" }); }} selectedOnly />
         </Field>
-        {bulkOnly && <div className="alert warn wide">Pots plus succulents: bulk only, delivered in multiple shipments. No individual recipient fulfillment by SB. Document whether the partner can handle distribution or assembly.</div>}
+        {bulkOnly && <div className="alert warn wide">Pots with succulents: complete gift, bulk orders only. Individual recipient shipping is unavailable.</div>}
         <Field label="Offer type" required error={s.fe("offer_type")}>
           <Select value={f.offer_type} onChange={(v) => setF({ ...f, offer_type: v })} options={Object.entries(OFFER_LABEL).filter(([k]) => !(bulkOnly && k === "individual"))} />
         </Field>

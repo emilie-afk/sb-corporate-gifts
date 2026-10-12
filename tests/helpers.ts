@@ -35,3 +35,8 @@ export async function call(method: string, path: string, body?: unknown, opts: {
 }
 
 export const S = { signer_name: "Test Person" };
+
+/** Raw (non-JSON) request with the test session, e.g. for file downloads. */
+export async function raw(method: string, path: string) {
+  return app(new Request(`http://localhost/api${path}`, { method, headers: { cookie } }));
+}

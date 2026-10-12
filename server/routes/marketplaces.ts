@@ -365,7 +365,7 @@ export function marketplaceRoutes(r: Router) {
     const p = await c.query("select family, archived_at from products where id = $1", [productId]);
     if (!p.rowCount) throw badRequest("Unknown product", { fields: { product_id: "Unknown product" } });
     if (p.rows[0].family === "pots_plus_succulents" && offerType === "individual")
-      throw badRequest("Pots plus succulents are a bulk-only offer delivered in multiple shipments. Choose a bulk offer type.", { fields: { offer_type: "Bulk only" } });
+      throw badRequest("Pots with succulents are a complete gift for bulk orders only (individual recipient shipping is unavailable). Choose a bulk offer type.", { fields: { offer_type: "Bulk only" } });
   }
 
   r.get("/marketplaces/:id/products", async ({ params }) => {

@@ -40,7 +40,7 @@ function duplicateMessage(constraint?: string) {
 
 function constraintMessage(msg: string) {
   if (msg.includes("pots_plus_succulents_bulk_only"))
-    return "Pots plus succulents are bulk-only (multiple shipments). Individual or separate-address recipient fulfillment cannot be saved for this offer.";
+    return "Pots with succulents are a complete gift for bulk orders only. Individual recipient shipping is unavailable, so individual or separate-address fulfillment cannot be saved for this offer.";
   if (msg.includes("pricing_record_immutable")) return "Agreed and active prices are immutable. Use Revise price to create a new version.";
   return "The data did not pass validation. Check required fields and values.";
 }
