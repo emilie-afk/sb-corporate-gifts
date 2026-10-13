@@ -1,14 +1,66 @@
-# Corporate gifting tracker — handoff (v2: easier pricing + Shopify revenue)
+# Corporate gifting tracker — handoff (v3: pricing models + any-layout pricing files)
 
-Base: `main` @ `cadd3a7`. This change is **not pushed and not deployed**. Same three tabs; no new navigation.
+Base: `main` @ `405955c` (v2, deployed 2026-10-12). This change is **not pushed and not deployed**.
 
-> **Deployment note:** pushing to `main` triggers a Netlify **production** build, which runs
-> `npm run db:migrate` first. That applies `db/migrations/002_pricing_sources_and_shopify_revenue.sql` (additive:
-> new tables/columns, one replaced trigger function; existing rows unchanged; verified on a copy with v1 data) and
-> `003_pots_with_succulents_complete_gift.sql` (data only, see below) to the Neon production database. Push only
-> with authorization.
+> **Deployment note:** pushing to `main` triggers a Netlify **production** build, which runs `npm run db:migrate`
+> first. That applies `db/migrations/004_pricing_models.sql` to the Neon production database: additive columns on
+> `pricing_records` and `pricing_import_batches`, five check constraints that only bind records with a pricing
+> model, and a replaced immutability trigger covering the new columns. Existing records keep `pricing_model = null`
+> and are not reinterpreted (verified on a copy holding v2-style records). Push only with authorization.
 
-## What changed
+## What changed (v3)
+
+**Pricing models** (`shared/pricingModel.ts` — one rule set for the API, the import and the screens)
+- *Fixed supplier price*: SB receives the agreed supplier price. Commission/fee refused (API and database
+  constraint) so no marketplace margin is deducted again. The marketplace selling price can be noted, reference only.
+- *Commission-based*: marketplace selling price, commission basis (selling price / SB retail price / other + note),
+  optional commission % and fixed fee. Blank = not specified, never 0%. SB receives = basis − commission − fee.
+- *Other / custom terms*: agreed price + written terms; nothing calculated.
+- *Direct sale*: Direct website only (agreed customer price).
+- Only the chosen model's fields are shown and required, and only once agreed/active. The headline
+  `agreed_price_cents` is derived from the model's own price (supplier price / selling price) — a different typed
+  agreed price is refused. Validation, duplicate protection and the version history are unchanged.
+- Older records: "Model not specified"; a revision asks for a model.
+- Pricing list/view/history show model, agreed price (labelled by model) and **SB receives** with the calculation.
+
+**Pricing file import** (button renamed *Import pricing file*)
+- .xlsx **or .csv** (comma/semicolon/tab, BOM, quoted values), any column layout; template is optional.
+- Choose the worksheet; header row detected below title rows (editable); %-formatted Excel cells read as percent.
+- Suggested column meanings (e.g. Wholesale / Vendor / Net price → agreed supplier price; Selling / Sale / List
+  price → marketplace selling price). "Price", "Cost", "MSRP", "Retail price", "Amount" … are **never** mapped
+  automatically. The team confirms or changes every meaning; columns can be ignored.
+- File-level settings: channel, pricing model, commission basis, fulfillment format, status (default Draft); each
+  row can override the model. Model-specific checks per row (e.g. fixed price + commission = rejected).
+- Preview shows the interpreted price, SB receives, terms and the action per row; gifts matched by variant ID or
+  exact SKU only, unmatched/ambiguous rows resolved by the team. Formulas/macros rejected; worksheets with formulas
+  are refused (another worksheet can be chosen). Other worksheets' values are dropped on confirm/discard.
+
+## Verification (v3)
+
+| Check | Kind | Result |
+|---|---|---|
+| `npm run typecheck` | static | PASS |
+| `npm test` — 90 tests (77 existing, updated to explicit models + 13 new pricing-model / file-layout tests) | **fixtures** on real PostgreSQL 16 | **90/90 PASS** |
+| `npm run build` + ESM bundle load of the parser (exceljs/jszip external) | build | PASS |
+| `scripts/ui-smoke.ts` — 34 browser checks (desktop 1366 px + mobile 390 px) | **fixtures** (local DB, synthetic CSV) | **34/34 PASS** |
+| Migration 004 on a database holding v2-style records (active with commission, draft) | local copy | PASS — rows unchanged, model null |
+| Netlify / Neon | — | **NOT RUN** (no push) |
+
+New fixture tests cover: rules per model, no double deduction, blank ≠ 0%, retail/selling/other basis, typed agreed
+price refusal, direct-only model, legacy records and revision, DB constraint, CSV with BOM + "$" values + bare
+"Price"/"MSRP" columns, semicolon CSV with commission %, per-row model overrides, worksheet choice + header row +
+% cells, model switch on an existing draft (commission cleared, not deducted), duplicate re-upload.
+
+## Setup after authorization
+
+1. Push to `main` (migration 004 runs in the production build). No new environment variables.
+2. Optional: revise existing prices to give them a pricing model.
+
+---
+
+# v2 reference (deployed 2026-10-12)
+
+## What changed (v2)
 
 **Pricing**
 - Form prefills (read-only, with source and date): website retail price, latest confirmed Product Master cost
@@ -47,7 +99,7 @@ Base: `main` @ `cadd3a7`. This change is **not pushed and not deployed**. Same t
   is still the original text; team-edited values are kept. Each change is recorded in the audit history
   ("System migration").
 
-## Verification
+## Verification (v2)
 
 | Check | Kind | Result |
 |---|---|---|
@@ -67,7 +119,7 @@ matching normalisation, same-channel and cross-channel rules, exclusions, manual
 stale previews, reconciliation, unauthorised ingestion (no secret / wrong secret / Google cookie), privacy rejection,
 failed imports preserving data.
 
-## Setup after authorization
+## v2 setup (done)
 
 1. Push to `main` (migrations 002 and 003 run in the production build).
 2. Netlify → add `CORPORATE_INGEST_SECRET` (secret, Functions scope, ≥ 32 random chars). Until then the endpoint
