@@ -6,6 +6,7 @@ import { audit, type Actor } from "../audit";
 import { HttpError, badRequest, conflict, notFound } from "../http";
 import { parse, text, cents, pct, date, version, assertUuid, defined } from "../validate";
 import { currentReferences, resolveReferenceFields, overrideSchema, type Override } from "../lib/pricingRefs";
+import { checkPricingModel, PRICING_MODELS } from "../../shared/pricingModel";
 
 export const FORMATS = ["individual", "corporate_separate_addresses", "bulk_one_location", "bulk_multiple_shipments"] as const;
 const EDITABLE = ["draft", "proposed"];
@@ -13,6 +14,12 @@ const EDITABLE = ["draft", "proposed"];
 // Retail reference and internal gift cost are NOT accepted as plain numbers: they come from the website
 // refresh and Product Master, or from an explicit manual override (value + reason + source + date).
 const priceFields = {
+  pricing_model: z.union([z.enum(PRICING_MODELS), z.null()]).optional(),
+  supplier_price_cents: cents,
+  selling_price_cents: cents,
+  commission_basis: z.union([z.enum(["selling_price", "retail_price", "other"]), z.null()]).optional(),
+  commission_basis_note: text(1000),
+  custom_terms: text(4000),
   cost_inclusions_note: text(1000),
   customer_discount_pct: pct,
   proposed_supplier_cents: cents,
@@ -48,7 +55,25 @@ const createSchema = z.object({
 /** Shared by the form API and the Excel import. */
 export type PricingInput = z.infer<typeof createSchema>;
 export const PRICE_FIELD_KEYS = Object.keys(priceFields);
-export { checkDates, checkProductRules };
+export { checkDates, checkProductRules, applyPricingModel };
+
+/**
+ * Model-specific validation (shared rules) + the derived headline agreed price. Mutates `rec.agreed_price_cents`
+ * for fixed (= supplier price) and commission (= selling price) models; a different typed agreed price is refused.
+ */
+async function applyPricingModel(c: pg.PoolClient, rec: any, opts: { requireModel?: boolean; typedAgreed?: unknown } = {}) {
+  const ch = await c.query("select type from channels where id = $1", [rec.channel_id]);
+  const { errors, agreedPriceCents } = checkPricingModel(rec, { channelType: ch.rows[0]?.type ?? null, requireModel: opts.requireModel });
+  const derived = rec.pricing_model === "fixed_supplier" || rec.pricing_model === "commission";
+  if (derived && opts.typedAgreed !== undefined && opts.typedAgreed !== null && opts.typedAgreed !== agreedPriceCents)
+    errors.agreed_price_cents = rec.pricing_model === "fixed_supplier"
+      ? "For a fixed supplier price, enter the agreed supplier price (supplier_price_cents)"
+      : "For a commission-based price, enter the marketplace selling price (selling_price_cents)";
+  if (Object.keys(errors).length) throw badRequest(Object.values(errors)[0], { fields: errors });
+  if (rec.pricing_model) rec.agreed_price_cents = agreedPriceCents;
+  if (rec.commission_basis !== "other" && rec.pricing_model !== "custom") rec.commission_basis_note = rec.commission_basis ? rec.commission_basis_note ?? null : null;
+  return rec;
+}
 
 const TERM_KEYS = ["payment_terms", "shipping_responsibility", "dispatch_requirement"] as const;
 
@@ -170,11 +195,12 @@ export function pricingRoutes(r: Router) {
     rejectTypedReferences(b);
     const d = parse(createSchema, b);
     checkDates(d);
-    if (d.status === "agreed") {
-      if (d.agreed_price_cents == null) throw badRequest("An agreed price is required.", { fields: { agreed_price_cents: "Required" } });
-      if (!d.approved_by) throw badRequest("Approved by is required for an agreed price.", { fields: { approved_by: "Required" } });
-    }
     return tx(async (c) => {
+      await applyPricingModel(c, d, { requireModel: true, typedAgreed: b.agreed_price_cents });
+      if (d.status === "agreed") {
+        if (d.agreed_price_cents == null) throw badRequest("An agreed price is required.", { fields: { agreed_price_cents: "Required" } });
+        if (!d.approved_by) throw badRequest("Approved by is required for an agreed price.", { fields: { approved_by: "Required" } });
+      }
       await checkProductRules(c, d.product_id, d.fulfillment_format);
       const rec = await insertRecord(c, d, a, null);
       return { record: rec };
@@ -207,8 +233,10 @@ export function pricingRoutes(r: Router) {
         const inc = [...new Set((det.components ?? []).map((x: any) => x.includes).filter(Boolean))].join("; ");
         if (inc) fields.cost_inclusions_note = inc;
       }
-      const merged = { ...cur, ...fields };
+      const merged = { ...cur, ...fields, commission_pct: fields.commission_pct !== undefined ? fields.commission_pct : cur.commission_pct == null ? null : Number(cur.commission_pct) };
       checkDates(merged);
+      await applyPricingModel(c, merged, { typedAgreed: b.agreed_price_cents });
+      for (const k of ["agreed_price_cents", "commission_basis_note"]) if (merged[k] !== cur[k]) fields[k] = merged[k];
       await checkProductRules(c, merged.product_id, merged.fulfillment_format);
       if (fields.status === "agreed") {
         if (merged.agreed_price_cents == null) throw badRequest("An agreed price is required.", { fields: { agreed_price_cents: "Required" } });
@@ -239,6 +267,8 @@ export function pricingRoutes(r: Router) {
         ...changes,
       };
       checkDates(copy);
+      if (copy.pricing_model === "fixed_supplier" || copy.pricing_model === "commission") copy.agreed_price_cents = null; // re-derived
+      await applyPricingModel(c, copy, { requireModel: true, typedAgreed: changes.agreed_price_cents });
       await checkProductRules(c, copy.product_id, copy.fulfillment_format);
       const rec = await insertRecord(c, copy, a, prev.id);
       return { record: rec };
@@ -309,6 +339,7 @@ export async function activateRecord(c: pg.PoolClient, rec: any, d: { effective_
   if (!from) throw badRequest("Activation needs an effective start date.", { fields: { effective_from: "Required" } });
   if (!approvedBy) throw badRequest("Activation needs an approver name.", { fields: { approved_by: "Required" } });
   checkDates({ effective_from: from, effective_to: to });
+  if (rec.status === "proposed") await applyPricingModel(c, { ...rec, commission_pct: rec.commission_pct == null ? null : Number(rec.commission_pct), status: "active" }, { requireModel: true });
   await checkProductRules(c, rec.product_id, rec.fulfillment_format);
 
   // Supersede the current active price for the same channel + variant + format (closing its period),

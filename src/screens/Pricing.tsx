@@ -12,6 +12,9 @@ import { GiftsPanel } from "./Gifts";
 import { WebsiteRefresh, CostRefresh, SourcesPanel } from "./Refresh";
 import { PricingForm } from "./PricingForm";
 import { PricingImport } from "./PricingImport";
+import { interpretPricing, BASIS_LABEL } from "../../shared/pricingModel";
+
+const interp = (r: any) => interpretPricing({ ...r, retail_ref_cents: r.snapshot_retail_cents ?? r.retail_ref_cents });
 
 const statusTone = (s: string) => (s === "active" ? "ok" : s === "agreed" ? "info" : s === "expired" ? "neutral" : "warn") as any;
 
@@ -20,7 +23,7 @@ function shipFeeSummary(r: any) {
   if (r.customer_shipping_cents != null) parts.push(`Cust. ship ${money(r.customer_shipping_cents)}`);
   if (r.expected_shipping_cents != null) parts.push(`Exp. ship ${money(r.expected_shipping_cents)}`);
   if (r.extra_cost_cents != null) parts.push(`Card/handling ${money(r.extra_cost_cents)}`);
-  if (r.commission_pct != null) parts.push(`Comm. ${pct(r.commission_pct)}`);
+  if (r.commission_pct != null) parts.push(`Comm. ${pct(r.commission_pct)}${r.commission_basis ? ` of ${BASIS_LABEL[r.commission_basis].toLowerCase()}` : ""}`);
   if (r.fixed_fee_cents != null) parts.push(`Fee ${money(r.fixed_fee_cents)}/unit`);
   return parts.length ? parts.join(" · ") : "Unspecified";
 }
@@ -50,7 +53,7 @@ export function PricingScreen({ params, nav }: { params: Record<string, string>;
         <button className="btn small" onClick={() => setPanel({ kind: "gifts" })}>Gifts &amp; collections</button>
         <button className="btn small" onClick={() => setPanel({ kind: "web" })}>Refresh website products</button>
         <button className="btn small" onClick={() => setPanel({ kind: "cost" })}>Refresh Product Master costs</button>
-        <button className="btn small" onClick={() => setPanel({ kind: "excel" })}>Import pricing Excel</button>
+        <button className="btn small" onClick={() => setPanel({ kind: "excel" })}>Import pricing file</button>
         <button className="btn ghost small" onClick={() => setPanel({ kind: "sources" })}>Cost source settings</button>
         <span className="hint">
           Website: {last("shopify") ? `${dateTime(last("shopify").confirmed_at)} by ${last("shopify").confirmed_by}` : "never refreshed"} ·
@@ -71,25 +74,26 @@ export function PricingScreen({ params, nav }: { params: Record<string, string>;
           <table className="table dense">
             <thead><tr>
               <th>Channel</th><th>Gift / variant</th><th className="num">Retail ref.</th><th className="num">Internal gift cost</th>
-              <th className="num">Proposed supplier</th><th className="num">Agreed selling</th><th>Shipping / fees</th><th>Status</th><th>From</th><th>To</th><th></th>
+              <th>Pricing model</th><th className="num">Agreed price</th><th className="num">SB receives</th><th>Shipping / fees</th><th>Status</th><th>From</th><th>To</th><th></th>
             </tr></thead>
             <tbody>
-              {list.data.pricing.length === 0 && <tr><td colSpan={11}><Empty>No pricing records. Use “Add pricing record”.</Empty></td></tr>}
-              {list.data.pricing.map((r: any) => (
+              {list.data.pricing.length === 0 && <tr><td colSpan={12}><Empty>No pricing records. Use “Add pricing record”.</Empty></td></tr>}
+              {list.data.pricing.map((r: any) => { const i = interp(r); return (
                 <tr key={r.id} className={r.status === "expired" ? "muted-row" : ""}>
                   <td data-label="Channel">{r.channel_name}</td>
                   <td data-label="Gift / variant"><strong>{productLabel(r.product_name, r.product_variant)}</strong><div className="hint">{FORMAT_LABEL[r.fulfillment_format]}{r.moq ? ` · MOQ ${r.moq}` : ""}</div></td>
                   <td className="num" data-label="Retail ref.">{money(r.retail_ref_cents)}</td>
                   <td className="num" data-label="Internal gift cost">{money(r.internal_cost_cents)}</td>
-                  <td className="num" data-label="Proposed supplier">{money(r.proposed_supplier_cents)}</td>
-                  <td className="num" data-label="Agreed selling"><strong>{money(r.agreed_price_cents)}</strong></td>
+                  <td data-label="Pricing model">{r.pricing_model ? i.modelLabel : <span className="unknown">Not specified</span>}</td>
+                  <td className="num" data-label="Agreed price"><strong>{money(r.agreed_price_cents)}</strong>{r.agreed_price_cents == null && r.proposed_supplier_cents != null && <div className="hint">proposed {money(r.proposed_supplier_cents)}</div>}<div className="hint">{r.pricing_model ? i.headlineLabel : ""}</div></td>
+                  <td className="num" data-label="SB receives">{i.sbReceivesCents != null ? money(i.sbReceivesCents) : <span className="unknown" title={i.explanation}>{r.pricing_model === "custom" ? "See terms" : "Unknown"}</span>}</td>
                   <td data-label="Shipping / fees" className="small-text">{shipFeeSummary(r)}</td>
                   <td data-label="Status"><Pill tone={statusTone(r.status)}>{PRICE_STATUS_LABEL[r.status]}</Pill></td>
                   <td data-label="From">{date(r.effective_from)}</td>
                   <td data-label="To">{date(r.effective_to)}</td>
                   <td><button className="btn small" onClick={() => setPanel({ kind: "view", rec: r })}>Open</button></td>
                 </tr>
-              ))}
+              ); })}
             </tbody>
           </table>
         </div>
@@ -133,8 +137,14 @@ function PricingView({ id, channels, onClose, onChanged }: { id: string; channel
             <dt>Retail reference</dt><dd>{money(r.retail_ref_cents, "Unknown")} <SourceTag kind="retail" r={r} /></dd>
             <dt>Internal gift cost</dt><dd>{money(r.internal_cost_cents, "Unknown")} <SourceTag kind="cost" r={r} />{r.cost_inclusions_note && <div className="hint">Includes: {r.cost_inclusions_note}</div>}</dd>
             {r.customer_discount_pct != null && <><dt>Customer discount</dt><dd>{pct(r.customer_discount_pct)}</dd></>}
-            <dt>Proposed supplier price</dt><dd>{money(r.proposed_supplier_cents, "Unknown")}</dd>
-            <dt>Agreed selling price</dt><dd><strong>{money(r.agreed_price_cents, "Not agreed")}</strong></dd>
+            <dt>Pricing model</dt><dd>{r.pricing_model ? interp(r).modelLabel : <span className="unknown">Not specified (older record — revise to choose a model)</span>}</dd>
+            {r.supplier_price_cents != null && <><dt>Agreed supplier price (SB receives)</dt><dd>{money(r.supplier_price_cents)}</dd></>}
+            {r.selling_price_cents != null && <><dt>Marketplace selling price</dt><dd>{money(r.selling_price_cents)}{r.pricing_model === "fixed_supplier" && <span className="hint"> · reference only</span>}</dd></>}
+            {(r.pricing_model === "commission" || r.commission_basis) && <><dt>Commission basis</dt><dd>{r.commission_basis ? BASIS_LABEL[r.commission_basis] : <span className="unknown">Not specified</span>}{r.commission_basis_note && <div className="hint">{r.commission_basis_note}</div>}</dd></>}
+            {r.proposed_supplier_cents != null && <><dt>Proposed supplier price</dt><dd>{money(r.proposed_supplier_cents)}</dd></>}
+            <dt>{interp(r).headlineLabel}</dt><dd><strong>{money(r.agreed_price_cents, "Not agreed")}</strong></dd>
+            <dt>SB receives per gift</dt><dd>{interp(r).sbReceivesCents != null ? <strong>{money(interp(r).sbReceivesCents)}</strong> : <span className="unknown">Not calculated</span>}<div className="hint">{interp(r).explanation}</div>{interp(r).notes.map((n, k) => <div key={k} className="hint">{n}</div>)}</dd>
+            {r.custom_terms && <><dt>Custom terms</dt><dd className="pre">{r.custom_terms}</dd></>}
             <dt>Shipping / fees</dt><dd>{shipFeeSummary(r)}{r.pricing_basis_note && <div className="hint">{r.pricing_basis_note}</div>}</dd>
             <dt>Effective</dt><dd>{date(r.effective_from)} → {date(r.effective_to)}</dd>
             <dt>Evidence</dt><dd>{r.evidence_ref ? (/^https?:/.test(r.evidence_ref) ? <a href={r.evidence_ref} target="_blank" rel="noreferrer noopener">{r.evidence_ref}</a> : r.evidence_ref) : "—"}</dd>
@@ -148,7 +158,7 @@ function PricingView({ id, channels, onClose, onChanged }: { id: string; channel
                 <tbody>
                   <tr><td>Retail reference</td><td className="num">{money(r.snapshot_retail_cents, "Unknown")}</td><td className="num">{money(r.current_retail_cents, "Unknown")}</td></tr>
                   <tr><td>Gift cost</td><td className="num">{money(r.snapshot_cost_cents, "Unknown")}</td><td className="num">{money(r.current_cost_cents, "Unknown")}</td></tr>
-                  <tr><td>Agreed selling price</td><td className="num"><strong>{money(r.agreed_price_cents)}</strong></td><td className="num hint">unchanged by refreshes</td></tr>
+                  <tr><td>{interp(r).headlineLabel}</td><td className="num"><strong>{money(r.agreed_price_cents)}</strong></td><td className="num hint">unchanged by refreshes</td></tr>
                 </tbody>
               </table>
               <p className="hint">Website and cost refreshes never change agreed prices. Use Revise price if renegotiating.</p>
@@ -189,11 +199,11 @@ function PriceHistory({ id }: { id: string }) {
   return (
     <Section title="Price history" count={h.data.versions.length}>
       <table className="table compact">
-        <thead><tr><th>Version</th><th>Status</th><th className="num">Agreed</th><th className="num">Proposed</th><th>Effective</th><th>Entered / approved</th></tr></thead>
+        <thead><tr><th>Version</th><th>Status</th><th>Model</th><th className="num">Agreed</th><th className="num">SB receives</th><th>Effective</th><th>Entered / approved</th></tr></thead>
         <tbody>
           {h.data.versions.map((v: any, i: number) => (
             <tr key={v.id} className={v.id === id ? "current-row" : ""}>
-              <td>v{i + 1}</td><td>{PRICE_STATUS_LABEL[v.status]}</td><td className="num">{money(v.agreed_price_cents)}</td><td className="num">{money(v.proposed_supplier_cents)}</td>
+              <td>v{i + 1}</td><td>{PRICE_STATUS_LABEL[v.status]}</td><td>{v.pricing_model ? interp(v).modelLabel : "—"}</td><td className="num">{money(v.agreed_price_cents)}</td><td className="num">{money(interp(v).sbReceivesCents)}</td>
               <td>{date(v.effective_from)} → {date(v.effective_to)}</td><td>{v.entered_by}{v.approved_by ? ` / ${v.approved_by}` : ""}<div className="hint">{dateTime(v.created_at)}</div></td>
             </tr>
           ))}
