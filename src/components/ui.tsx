@@ -92,8 +92,8 @@ export function FormActions({ saving, onCancel, label = "Save", disabled }: { sa
 }
 
 // ------------------------------------------------------------- containers
-export function Overlay({ title, onClose, children, kind = "panel", subtitle }: {
-  title: ReactNode; subtitle?: ReactNode; onClose: () => void; children: ReactNode; kind?: "panel" | "modal";
+export function Overlay({ title, onClose, children, kind = "panel", subtitle, wide }: {
+  title: ReactNode; subtitle?: ReactNode; onClose: () => void; children: ReactNode; kind?: "panel" | "modal"; wide?: boolean;
 }) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -102,7 +102,7 @@ export function Overlay({ title, onClose, children, kind = "panel", subtitle }: 
   }, [onClose]);
   return (
     <div className={`overlay ${kind}`} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={kind} role="dialog" aria-modal="true" aria-label={typeof title === "string" ? title : undefined}>
+      <div className={`${kind}${wide ? " wide-modal" : ""}`} role="dialog" aria-modal="true" aria-label={typeof title === "string" ? title : undefined}>
         <div className="overlay-head">
           <div>
             <h2>{title}</h2>

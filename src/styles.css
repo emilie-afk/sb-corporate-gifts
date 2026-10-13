@@ -241,3 +241,28 @@ h3.subhead { margin: 8px 0 2px; }
   .ref-manual { grid-template-columns: 1fr; }
 }
 .section-body > .btn { align-self: flex-start; }
+
+/* pricing models */
+.model-pick { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px 10px; margin: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; min-width: 0; }
+.model-pick legend { font-weight: 600; font-size: 13px; padding: 0 4px; }
+.model-pick > .field-error, .model-pick > .hint { grid-column: 1 / -1; }
+.model-option { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; row-gap: 2px; align-items: center; border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; cursor: pointer; background: var(--surface); }
+.model-option .hint { grid-column: 2; }
+.model-option.on { border-color: var(--brand); background: var(--brand-soft); }
+.model-option input { margin: 0; accent-color: var(--brand); }
+.calc.interpret { display: block; }
+.calc.interpret .label { font-weight: 600; }
+.import-settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px 12px; align-items: end; }
+.map-table td { vertical-align: middle; }
+.map-table select { width: 100%; min-width: 0; }
+.map-sample { color: var(--muted); font-size: 12.5px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pill-suggested { font-size: 11px; color: var(--info); }
+.notes-list { margin: 0; padding-left: 18px; font-size: 13px; }
+.interp { font-size: 12.5px; }
+.interp strong { font-variant-numeric: tabular-nums; }
+@media (max-width: 760px) {
+  .model-pick { grid-template-columns: 1fr; }
+  .map-sample { max-width: 120px; }
+}
+
+.overlay > .modal.wide-modal { width: min(1180px, 100%); }

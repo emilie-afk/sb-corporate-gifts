@@ -8,33 +8,49 @@ Every save asks for **Your name** — a self-reported signature. The shared Goog
 2. The form fills in, read-only: the **website retail price** (from the last website refresh), the **Product
    Master gift cost** (with cost basis, pack quantity and what it already includes) and the channel's defaults
    (MOQ, discount, terms). Don't retype them.
-3. Enter only what you negotiate: proposed supplier price, agreed selling price, customer shipping charge,
-   marketplace fees (commission % and/or fixed fee), status and effective dates. Everything else is under
-   **More details**.
-4. If a retail price or cost is missing or wrong, tick **Enter a manual value instead** and give the amount,
+3. Choose **how this marketplace pays SB**. Only that model's fields are shown and required (and only once the
+   price is agreed):
+   - **Fixed supplier price** — SB receives the agreed supplier price per gift. Nothing is deducted from it; commission
+     and fee fields don't apply. The marketplace's own selling price can be noted for reference.
+   - **Commission-based** — marketplace selling price, what the commission is calculated on (selling price, SB
+     retail price or other), commission % and/or fixed fee. Blank commission = **not specified**, never 0% (enter 0
+     if there is none). The form shows what SB receives, e.g. $40.00 − 15% = $34.00.
+   - **Other / custom terms** — the agreed price plus a written explanation. Nothing is calculated automatically.
+   The Direct website always uses *Direct sale* (the agreed customer price).
+4. Also enter customer shipping charge, status and effective dates. Everything else is under **More details**.
+5. If a retail price or cost is missing or wrong, tick **Enter a manual value instead** and give the amount,
    reason, source and date. It is shown as **Manual**. Blank always means unknown — never $0.
-5. **Direct website** shows a *suggested* price = retail × (1 − 20%). It is only stored if you save it as the
-   agreed price, and it never affects marketplace prices.
-6. Agreed/active prices can't be edited. Use **Revise price** for a new dated version; the old one and its
+6. **Direct website** shows a *suggested* price = retail × (1 − 20%). It is only stored if you save it as the
+   agreed customer price, and it never affects marketplace prices.
+7. Agreed/active prices can't be edited. Use **Revise price** for a new dated version; the old one and its
    snapshot (retail, cost, terms at the time) stay in **View price history**.
-7. Refreshing website products or Product Master costs never changes an agreed price; the price view shows
+8. Refreshing website products or Product Master costs never changes an agreed price; the price view shows
    "when agreed" next to "current" so you can decide whether to renegotiate.
+9. Older prices entered before pricing models show **Model not specified**; choose a model when you revise them.
 
 **Custom pots:** sold on their own (no plants), or with succulents as a complete gift. Pots with succulents are
 bulk orders only — individual recipient shipping is unavailable, so individual and separate-address formats can't
 be priced or proposed.
 
-## Excel pricing import (optional)
+## Pricing file import (optional — .xlsx or .csv, any layout)
 
-1. **Pricing → Import pricing Excel → Download the .xlsx template.** One row per channel + gift/variant +
-   fulfillment format. Identify gifts by **Shopify variant ID** (best) or exact **SKU** — the name column is for
-   your reference only.
-2. Type plain values (no formulas, no macros). Leave a cell blank when unknown.
-3. Upload. Check the preview: *New price*, *Update draft*, *New version*, *No change* or *Error*. Choose the gift
-   for any ambiguous or unmatched row. For agreed/active prices tick **Create new version** to make a new version.
-4. Select the rows, enter your name, **Save selected rows**. Re-uploading the same file creates nothing new.
-5. Optional retail/cost override columns are stored as **manual** values with the file as their source; they
-   never change Shopify or Product Master.
+1. **Pricing → Import pricing file.** Upload the marketplace's own price list or your sheet as it is. The
+   **template** download is only a convenience; its commission and fee columns are optional.
+2. **Where the data is:** for Excel, pick the worksheet. The header row is found automatically (title rows above
+   it are fine); change it if needed.
+3. **For the whole file:** choose the channel (unless the file has a channel column), the **pricing model**, the
+   commission basis for commission-based files, the fulfillment format and the status (default Draft).
+4. **What each column means:** suggestions are marked (e.g. "Wholesale price", "Vendor price", "Net price" →
+   *Agreed supplier price (SB receives)*; "Selling price" → *Marketplace selling price*). A column called just
+   "Price", "Cost" or "MSRP" is never assumed — choose its meaning or ignore it. **Apply and re-check rows.**
+5. **Review rows:** each row shows the interpreted price, what SB receives and the terms, plus *New price*,
+   *Update draft*, *New version*, *No change* or *Error*. Change a row's pricing model if it differs from the file.
+   Gifts are matched by **Shopify variant ID** or exact **SKU** only — choose the gift for ambiguous or unmatched rows.
+   A fixed supplier price with a commission in the same row is rejected (it would be deducted twice).
+6. For agreed/active prices tick **Create new version**. Select rows, enter your name, **Save selected rows**.
+   Re-uploading the same rows creates nothing new.
+7. Plain values only (no formulas, no macros); blank = unknown. Optional retail/cost override columns are stored
+   as **manual** values with the file as their source; they never change Shopify or Product Master.
 
 ## Shopify matching rules (Revenue → Shopify matching rules)
 

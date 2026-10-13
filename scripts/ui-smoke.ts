@@ -4,7 +4,6 @@ import { chromium, type Page } from "playwright";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import ExcelJS from "exceljs";
 
 const BASE = process.env.BASE_URL ?? "http://localhost:8888";
 const OUT = process.env.SHOT_DIR ?? "screenshots";
@@ -108,17 +107,17 @@ check("unknown cost shown as Unknown, not $0", (await pf.locator(".ref-box", { h
 await pf.getByLabel("Fulfillment format").selectOption("corporate_separate_addresses");
 check("direct discount prefilled from channel default", (await pf.getByLabel("Customer discount %").inputValue()) === "20");
 await pf.getByText("Suggested customer price").waitFor();
-const calc = await pf.locator(".calc").innerText();
+const calc = await pf.locator(".calc").first().innerText();
 check("direct suggested price = retail × (1 − 20%)", calc.includes("$26.10"), calc.split("\n")[0]);
 await pf.getByRole("button", { name: /More details/ }).click();
 check("optional fields live under More details", await pf.getByLabel("Payment terms").isVisible());
 await sign(page);
-await pf.locator(".calc").scrollIntoViewIfNeeded();
+await pf.locator(".calc").first().scrollIntoViewIfNeeded();
 await page.screenshot({ path: `${OUT}/05-pricing-form-direct.png` });
 await pf.getByRole("button", { name: "Save" }).click();
 await page.locator("tbody tr", { hasText: "Thank You Gift Box" }).waitFor();
-const agreedCell = await page.locator("tbody tr", { hasText: "Thank You Gift Box" }).locator('td[data-label="Agreed selling"]').innerText();
-check("suggested price not stored as agreed", agreedCell.trim() === "—", agreedCell);
+const agreedCell = await page.locator("tbody tr", { hasText: "Thank You Gift Box" }).locator('td[data-label="Agreed price"]').innerText();
+check("suggested price not stored as agreed", agreedCell.trim().startsWith("—"), agreedCell);
 
 // manual cost override needs reason + source + date
 await page.getByRole("button", { name: "Add pricing record" }).click();
@@ -126,6 +125,20 @@ const pm = page.getByRole("dialog", { name: "Add pricing record" });
 await pm.getByLabel("Channel").selectOption({ label: "Goody" });
 await pm.getByPlaceholder("Search gifts by name, variant or SKU").fill("Thank You Gift Box");
 await pm.getByRole("button", { name: /Thank You Gift Box — Simple/ }).click();
+// pricing models: only the chosen model's fields; live "SB receives"
+await pm.getByRole("radio", { name: /Commission-based/ }).check();
+await pm.getByRole("textbox", { name: /^Marketplace selling price/ }).fill("40.00");
+await pm.getByLabel("Commission is calculated on").selectOption("selling_price");
+await pm.getByLabel("Commission % (optional)").fill("15");
+await pm.locator(".calc.interpret strong", { hasText: "$34.00" }).waitFor();
+check("commission-based: SB receives = selling price − commission", (await pm.locator(".calc.interpret").innerText()).includes("15% commission"));
+await page.screenshot({ path: `${OUT}/05b-pricing-form-commission.png` });
+await pm.getByLabel("Commission % (optional)").fill("");
+check("blank commission is not 0% (amount not calculated)", (await pm.locator(".calc.interpret").innerText()).includes("not specified"));
+await pm.getByRole("radio", { name: /Fixed supplier price/ }).check();
+check("fixed supplier price hides commission and fee fields", (await pm.getByLabel("Commission % (optional)").count()) === 0 && (await pm.getByLabel(/Fixed fee/).count()) === 0);
+await pm.getByLabel("Agreed supplier price — SB receives per gift").fill("24.00");
+check("fixed supplier price: SB receives the supplier price, nothing deducted", (await pm.locator(".calc.interpret").innerText()).includes("No commission is deducted"));
 await pm.locator(".ref-box", { hasText: "Internal gift cost" }).getByLabel("Enter a manual value instead").check();
 await pm.locator(".ref-box", { hasText: "Internal gift cost" }).getByLabel("Manual amount (USD)").fill("14.00");
 await pm.getByLabel("Proposed supplier price").fill("21.00");
@@ -155,28 +168,27 @@ const fmtOptions = await pf2.getByLabel("Fulfillment format").locator("option").
 check("pots+succulents hides individual / separate-address formats", !fmtOptions.some((o) => o.startsWith("Individual") || o.includes("separate")), fmtOptions.join(", "));
 await pf2.getByRole("button", { name: "Cancel" }).click();
 
-// ---- Excel pricing import
-const vid = await page.evaluate(async () => {
-  const r = await fetch("/api/products?q=Thank%20You%20Gift%20Box&selected=1").then((x) => x.json());
-  return String(r.products.find((p: any) => p.variant === "Simple").shopify_variant_id);
-});
-const wb = new ExcelJS.Workbook();
-const ws = wb.addWorksheet("Pricing");
-ws.addRow(["Channel", "Shopify variant ID", "Gift name (reference only)", "Proposed supplier price", "Fulfillment format", "Status"]);
-ws.addRow(["Reachdesk", vid, "Thank You Gift Box", 22, "Individual", "Proposed"]);
-ws.addRow(["Not a channel", vid, "Thank You Gift Box", 22, "Individual", "Draft"]);
-const xlsxPath = join(tmpdir(), "example-pricing-SCREENSHOT.xlsx");
-writeFileSync(xlsxPath, Buffer.from(await wb.xlsx.writeBuffer()));
-await page.getByRole("button", { name: "Import pricing Excel" }).click();
-const xi = page.getByRole("dialog", { name: "Import pricing Excel" });
+// ---- Pricing file import: a marketplace-style CSV (no template), file-level channel + model
+const csvPath = join(tmpdir(), "example-partner-prices-SCREENSHOT.csv");
+writeFileSync(csvPath, "SKU,Item name,Wholesale price,Price\nSYN-TYGB-S,Thank You Gift Box,22,39\nSYN-NOPE,Unknown item,10,20\n");
+await page.getByRole("button", { name: "Import pricing file" }).click();
+const xi = page.getByRole("dialog", { name: "Import pricing file" });
 await sign(page);
-await xi.locator('input[type="file"]').setInputFiles(xlsxPath);
-await xi.locator("table").waitFor();
-check("Excel preview shows a valid new price and an error row", (await xi.getByText("New price").count()) === 1 && (await xi.getByText(/Unknown channel/).count()) === 1);
-await page.screenshot({ path: `${OUT}/08-excel-import-preview.png` });
+await xi.locator('input[type="file"]').setInputFiles(csvPath);
+await xi.getByText("What each column means").waitFor();
+check("column suggestion: Wholesale price → agreed supplier price", (await xi.getByLabel("Meaning of Wholesale price").inputValue()) === "supplier_price");
+check("a bare “Price” column is never assumed to be what SB earns", (await xi.getByLabel("Meaning of Price", { exact: true }).inputValue()) === "" && (await xi.getByText(/doesn't say whose price it is/).count()) === 1);
+await xi.getByRole("combobox", { name: /^Channel/ }).selectOption({ label: "Reachdesk" });
+await xi.getByRole("combobox", { name: /^Pricing model(?! for)/ }).selectOption("fixed_supplier");
+await xi.getByRole("combobox", { name: /^Fulfillment format/ }).selectOption("individual");
+await xi.getByRole("button", { name: "Apply and re-check rows" }).click();
+await xi.getByText("Review rows").waitFor();
+check("preview interprets the price (SB receives $22.00) and flags the unmatched SKU",
+  (await xi.locator(".import-table").innerText()).includes("$22.00") && (await xi.getByText(/No gift with SKU/).count()) === 1);
+await page.screenshot({ path: `${OUT}/08-pricing-file-import-preview.png`, fullPage: true });
 await xi.getByRole("button", { name: /Save 1 selected row/ }).click();
 await xi.getByText("Import saved.").waitFor();
-check("Excel import saved selected valid row", (await xi.locator(".alert.success").innerText()).includes("1 create"));
+check("pricing file import saved the selected valid row", (await xi.locator(".alert.success").innerText()).includes("1 create"));
 await xi.getByRole("button", { name: "Close" }).last().click();
 
 // ---- Revenue: manual Shopify report upload (synthetic fixture), rule preview + confirm, manual fee

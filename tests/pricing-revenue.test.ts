@@ -67,10 +67,10 @@ describe("product fulfillment rules", () => {
     const p = potsSucc();
     expect((await call("PATCH", `/products/${p.id}`, { ...S, individual_recipient_fulfillment: "yes", version: p.version })).status).toBe(400);
     for (const fmt of ["individual", "corporate_separate_addresses"]) {
-      const r = await call("POST", "/pricing", { ...S, channel_id: channels["CorporateGift.com"].id, product_id: p.id, fulfillment_format: fmt });
+      const r = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: channels["CorporateGift.com"].id, product_id: p.id, fulfillment_format: fmt });
       expect(r.status).toBe(400);
     }
-    const bulk = await call("POST", "/pricing", { ...S, channel_id: channels["CorporateGift.com"].id, product_id: p.id, fulfillment_format: "bulk_multiple_shipments" });
+    const bulk = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: channels["CorporateGift.com"].id, product_id: p.id, fulfillment_format: "bulk_multiple_shipments" });
     expect(bulk.status).toBe(200);
     const mid = channels["CorporateGift.com"].marketplace_id;
     expect((await call("POST", `/marketplaces/${mid}/products`, { ...S, product_id: p.id, offer_type: "individual" })).status).toBe(400);
@@ -93,7 +93,7 @@ describe("product fulfillment rules", () => {
 
 describe("pricing", () => {
   it("never prefills marketplace supplier prices from the direct discount; unknown stays null", async () => {
-    const r = await call("POST", "/pricing", { ...S, channel_id: channels["Goody"].id, product_id: gift.id, fulfillment_format: "individual" });
+    const r = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: channels["Goody"].id, product_id: gift.id, fulfillment_format: "individual" });
     expect(r.body.record.proposed_supplier_cents).toBeNull();
     expect(r.body.record.customer_discount_pct).toBeNull();
     expect(r.body.record.expected_shipping_cents).toBeNull();
@@ -102,16 +102,16 @@ describe("pricing", () => {
 
   it("agreed versions are immutable; revision keeps history; activation supersedes; overlaps rejected", async () => {
     const ch = channels["Reachdesk"].id;
-    const d = await call("POST", "/pricing", { ...S, channel_id: ch, product_id: gift.id, fulfillment_format: "individual", proposed_supplier_cents: 1900, moq: 1 });
+    const d = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: ch, product_id: gift.id, fulfillment_format: "individual", proposed_supplier_cents: 1900, moq: 1 });
     const rec = d.body.record;
     // agree without price → rejected
     expect((await call("PATCH", `/pricing/${rec.id}`, { ...S, status: "agreed", approved_by: "Lead", version: rec.version })).status).toBe(400);
-    const agreed = await call("PATCH", `/pricing/${rec.id}`, { ...S, status: "agreed", agreed_price_cents: 1800, approved_by: "Lead", payment_terms: "Net 30", version: rec.version });
+    const agreed = await call("PATCH", `/pricing/${rec.id}`, { ...S, status: "agreed", supplier_price_cents: 1800, approved_by: "Lead", payment_terms: "Net 30", version: rec.version });
     expect(agreed.status).toBe(200);
     expect(agreed.body.record.terms_snapshot.payment_terms).toEqual({ value: "Net 30", source: "gift_override" });
     expect(agreed.body.record.terms_snapshot.dispatch_requirement.source).toBe("unspecified");
     // immutable
-    const edit = await call("PATCH", `/pricing/${rec.id}`, { ...S, agreed_price_cents: 1700, version: agreed.body.record.version });
+    const edit = await call("PATCH", `/pricing/${rec.id}`, { ...S, supplier_price_cents: 1700, version: agreed.body.record.version });
     expect(edit.status).toBe(409);
     // activation needs start date
     expect((await call("POST", `/pricing/${rec.id}/activate`, { ...S, version: agreed.body.record.version })).status).toBe(400);
@@ -120,7 +120,7 @@ describe("pricing", () => {
     expect(act.body.record.status).toBe("active");
 
     // revise → new draft linked to previous; old version untouched
-    const rev = await call("POST", `/pricing/${rec.id}/revisions`, { ...S, agreed_price_cents: 2000 });
+    const rev = await call("POST", `/pricing/${rec.id}/revisions`, { ...S, supplier_price_cents: 2000 });
     expect(rev.body.record.previous_record_id).toBe(rec.id);
     expect(rev.body.record.status).toBe("draft");
     const ag2 = await call("PATCH", `/pricing/${rev.body.record.id}`, { ...S, status: "agreed", approved_by: "Lead", version: 1 });
@@ -134,7 +134,7 @@ describe("pricing", () => {
     expect(old.agreed_price_cents).toBe(1800);
 
     // a third version starting before the current active one is rejected
-    const rev3 = await call("POST", `/pricing/${rev.body.record.id}/revisions`, { ...S, agreed_price_cents: 2100 });
+    const rev3 = await call("POST", `/pricing/${rev.body.record.id}/revisions`, { ...S, supplier_price_cents: 2100 });
     const ag3 = await call("PATCH", `/pricing/${rev3.body.record.id}`, { ...S, status: "agreed", approved_by: "Lead", version: 1 });
     const bad = await call("POST", `/pricing/${rev3.body.record.id}/activate`, { ...S, effective_from: "2026-10-15", version: ag3.body.record.version });
     expect(bad.status).toBe(409);
@@ -144,12 +144,12 @@ describe("pricing", () => {
   });
 
   it("validates end >= start", async () => {
-    const r = await call("POST", "/pricing", { ...S, channel_id: channels["Snappy"].id, product_id: gift.id, fulfillment_format: "individual", effective_from: "2026-10-10", effective_to: "2026-10-01" });
+    const r = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: channels["Snappy"].id, product_id: gift.id, fulfillment_format: "individual", effective_from: "2026-10-10", effective_to: "2026-10-01" });
     expect(r.status).toBe(400);
   });
 
   it("direct website pricing stores discount but agreed price only when explicitly entered", async () => {
-    const r = await call("POST", "/pricing", { ...S, channel_id: channels["Direct website"].id, product_id: gift.id, fulfillment_format: "corporate_separate_addresses", customer_discount_pct: 20, moq: 10 });
+    const r = await call("POST", "/pricing", { ...S, pricing_model: "direct", channel_id: channels["Direct website"].id, product_id: gift.id, fulfillment_format: "corporate_separate_addresses", customer_discount_pct: 20, moq: 10 });
     expect(r.body.record.agreed_price_cents).toBeNull();
     expect(Number(r.body.record.customer_discount_pct)).toBe(20);
   });

@@ -3,11 +3,20 @@ import { get, post, patch, qs } from "../api";
 import { Field, Select, SignerField, FormActions, ErrorBox, Overlay, Pill, useSave, useSigner, rememberSigner } from "../components/ui";
 import { ProductPicker, type ProductLite } from "../components/ProductPicker";
 import { money, parseMoney, centsToInput, pct, dateTime, today, productLabel, FORMAT_LABEL } from "../format";
+import { checkPricingModel, interpretPricing, MODEL_LABEL, MODEL_HELP, BASIS_LABEL, MARKETPLACE_MODELS, type PricingModel } from "../../shared/pricingModel";
 
 type Mode = { kind: "create" } | { kind: "edit"; rec: any } | { kind: "revise"; rec: any };
 type OverrideState = { on: boolean; amount: string; reason: string; source: string; date: string };
 
-const MAIN_MONEY = ["proposed_supplier_cents", "agreed_price_cents", "customer_shipping_cents", "fixed_fee_cents"] as const;
+const MAIN_MONEY = ["proposed_supplier_cents", "supplier_price_cents", "selling_price_cents", "agreed_price_cents", "customer_shipping_cents", "fixed_fee_cents"] as const;
+/** Fields each model uses; everything else is sent as blank so nothing from another model lingers. */
+const MODEL_FIELDS: Record<PricingModel, string[]> = {
+  fixed_supplier: ["supplier_price_cents", "selling_price_cents", "proposed_supplier_cents"],
+  commission: ["selling_price_cents", "commission_pct", "fixed_fee_cents", "commission_basis", "commission_basis_note"],
+  custom: ["agreed_price_cents", "custom_terms", "selling_price_cents", "proposed_supplier_cents", "commission_pct", "fixed_fee_cents", "commission_basis", "commission_basis_note"],
+  direct: ["agreed_price_cents"],
+};
+const MODEL_KEYS = ["supplier_price_cents", "selling_price_cents", "agreed_price_cents", "proposed_supplier_cents", "commission_pct", "fixed_fee_cents", "commission_basis", "commission_basis_note", "custom_terms"];
 const MORE_MONEY = ["expected_shipping_cents", "extra_cost_cents"] as const;
 
 function initialOverride(rec: any, kind: "retail" | "cost"): OverrideState {
@@ -63,6 +72,8 @@ export function PricingForm({ channels, defaultChannel, mode = { kind: "create" 
     status: mode.kind === "edit" ? rec.status : "draft",
     customer_discount_pct: rec?.customer_discount_pct == null ? "" : String(rec.customer_discount_pct),
     commission_pct: rec?.commission_pct == null ? "" : String(rec.commission_pct),
+    pricing_model: (rec?.pricing_model ?? "") as PricingModel | "",
+    commission_basis: rec?.commission_basis ?? "", commission_basis_note: rec?.commission_basis_note ?? "", custom_terms: rec?.custom_terms ?? "",
     moq: rec?.moq == null ? "" : String(rec.moq),
     fulfillment_format: rec?.fulfillment_format ?? "individual",
     cost_inclusions_note: rec?.cost_inclusions_note ?? "", pricing_basis_note: rec?.pricing_basis_note ?? "",
@@ -99,6 +110,18 @@ export function PricingForm({ channels, defaultChannel, mode = { kind: "create" 
 
   const ch = channels.find((c) => c.id === channelId);
   const isDirect = ch?.type === "direct";
+  const model: PricingModel | "" = isDirect ? "direct" : f.pricing_model === "direct" ? "" : f.pricing_model;
+  const uses = (k: string) => !!model && MODEL_FIELDS[model].includes(k);
+  const live = (() => {
+    const c = (k: string) => { const v = parseMoney(m[k] ?? ""); return v == null || Number.isNaN(v) ? null : v; };
+    const p = f.commission_pct === "" ? null : Number(f.commission_pct);
+    return interpretPricing({
+      pricing_model: model || null, supplier_price_cents: c("supplier_price_cents"), selling_price_cents: c("selling_price_cents"),
+      agreed_price_cents: c("agreed_price_cents"), commission_pct: p == null || Number.isNaN(p) ? null : p, fixed_fee_cents: uses("fixed_fee_cents") ? c("fixed_fee_cents") : null,
+      commission_basis: f.commission_basis || null, commission_basis_note: f.commission_basis_note, custom_terms: f.custom_terms,
+      retail_ref_cents: retailOv.on ? parseMoney(retailOv.amount) : refs?.retail?.cents ?? null,
+    });
+  })();
   const bulkOnly = product?.family === "pots_plus_succulents";
   const formats = Object.entries(FORMAT_LABEL).filter(([k]) => !(bulkOnly && (k === "individual" || k === "corporate_separate_addresses")));
   const retailNow = retailOv.on ? parseMoney(retailOv.amount) : refs?.retail?.cents ?? null;
@@ -118,8 +141,16 @@ export function PricingForm({ channels, defaultChannel, mode = { kind: "create" 
     for (const k of ["customer_discount_pct", "commission_pct"] as const) { const v = num(k); if (v !== null && (Number.isNaN(v) || v < 0 || v > 100)) errs[k] = "0–100"; }
     const moq = num("moq");
     if (moq !== null && (!Number.isInteger(moq) || moq < 1)) errs.moq = "Whole number ≥ 1";
-    if (f.status === "agreed" && body.agreed_price_cents == null) errs.agreed_price_cents = "Required for an agreed price";
+    if (!model) errs.pricing_model = "Choose how this marketplace pays SB";
     if (f.status === "agreed" && !f.approved_by.trim()) errs.approved_by = "Required for an agreed price";
+    // Only the chosen model's fields are sent; the others are cleared (blank = not applicable).
+    const modelBody: Record<string, any> = {};
+    for (const k of MODEL_KEYS) {
+      if (!model || !MODEL_FIELDS[model].includes(k)) { modelBody[k] = null; continue; }
+      modelBody[k] = k in body ? body[k] : k === "commission_pct" ? num("commission_pct") : (f as any)[k] || null;
+    }
+    if (model === "commission" && modelBody.commission_basis !== "other") modelBody.commission_basis_note = null;
+    if (model) Object.assign(errs, checkPricingModel({ ...modelBody, pricing_model: model, status: f.status }, { channelType: ch?.type }).errors);
     const ov = (o: OverrideState, prefix: string) => {
       if (!o.on) return null;
       const c = parseMoney(o.amount);
@@ -132,8 +163,9 @@ export function PricingForm({ channels, defaultChannel, mode = { kind: "create" 
     const retail_override = ov(retailOv, "retail"), cost_override = ov(costOv, "cost");
     setLocalErr(errs);
     if (Object.keys(errs).length) { if (Object.keys(errs).some((k) => MORE_MONEY.includes(k as any))) setMore(true); return; }
+    Object.assign(body, modelBody, { pricing_model: model });
     Object.assign(body, {
-      customer_discount_pct: isDirect ? num("customer_discount_pct") : null, commission_pct: num("commission_pct"), moq,
+      customer_discount_pct: isDirect ? num("customer_discount_pct") : null, moq,
       fulfillment_format: f.fulfillment_format, cost_inclusions_note: f.cost_inclusions_note, pricing_basis_note: f.pricing_basis_note,
       shipping_responsibility: f.shipping_responsibility, payment_terms: f.payment_terms, dispatch_requirement: f.dispatch_requirement,
       agreement_notes: f.agreement_notes, effective_from: f.effective_from || null, effective_to: f.effective_to || null,
@@ -205,18 +237,69 @@ export function PricingForm({ channels, defaultChannel, mode = { kind: "create" 
             </Field>
             <div className="calc wide">
               Suggested customer price (calculated: retail × (1 − discount)): <strong>{suggested == null ? "—" : money(suggested)}</strong>
-              {suggested != null && <button type="button" className="btn ghost small" onClick={() => setM({ ...m, agreed_price_cents: centsToInput(suggested) })}>Copy into agreed price</button>}
+              {suggested != null && <button type="button" className="btn ghost small" onClick={() => setM({ ...m, agreed_price_cents: centsToInput(suggested) })}>Copy into agreed customer price</button>}
               <div className="hint">A suggestion for Direct website only. It never sets marketplace prices and is stored only when you save it as the agreed price.</div>
             </div>
           </>
         )}
-        {!isDirect && moneyField("proposed_supplier_cents", "Proposed supplier price")}
-        {moneyField("agreed_price_cents", isDirect ? "Agreed customer price" : "Agreed selling price")}
+        {!isDirect && (
+          <fieldset className="model-pick wide" aria-describedby="model-help">
+            <legend>How this marketplace pays SB <span className="req">*</span></legend>
+            {MARKETPLACE_MODELS.map((k) => (
+              <label key={k} className={`model-option${f.pricing_model === k ? " on" : ""}`}>
+                <input type="radio" name="pricing_model" value={k} checked={f.pricing_model === k} onChange={() => setF({ ...f, pricing_model: k })} />
+                <strong>{MODEL_LABEL[k]}</strong>
+                <span className="hint">{MODEL_HELP[k]}</span>
+              </label>
+            ))}
+            {fe("pricing_model") && <div className="field-error" id="model-help">{fe("pricing_model")}</div>}
+            {terms?.fee_note && <div className="hint">Channel fee terms on file: {terms.fee_note}</div>}
+          </fieldset>
+        )}
+        {model === "fixed_supplier" && (
+          <>
+            {moneyField("supplier_price_cents", "Agreed supplier price — SB receives per gift", f.status === "agreed" ? "Required. Nothing is deducted from this amount." : "Nothing is deducted from this amount. Blank = not agreed yet.")}
+            {moneyField("proposed_supplier_cents", "Proposed supplier price (SB's offer)")}
+            {moneyField("selling_price_cents", "Marketplace selling price (optional)", "What the marketplace charges its customer — for reference only, never used to reduce SB's amount.")}
+          </>
+        )}
+        {model === "commission" && (
+          <>
+            {moneyField("selling_price_cents", "Marketplace selling price", f.status === "agreed" ? "Required: what the marketplace's customer pays." : "What the marketplace's customer pays.")}
+            <Field label="Commission is calculated on" required={f.status === "agreed"} error={fe("commission_basis")}>
+              <Select value={f.commission_basis} onChange={(v) => setF({ ...f, commission_basis: v })} empty="Not specified" options={Object.entries(BASIS_LABEL)} />
+            </Field>
+            {f.commission_basis === "other" && (
+              <Field label="Commission basis — explain" required wide error={fe("commission_basis_note")}><input value={f.commission_basis_note} onChange={(e) => setF({ ...f, commission_basis_note: e.target.value })} /></Field>
+            )}
+            <Field label="Commission % (optional)" error={fe("commission_pct")} hint="Blank = not specified (never assumed 0%). Enter 0 if there is none.">
+              <input inputMode="decimal" value={f.commission_pct} placeholder="Not specified" onChange={(e) => setF({ ...f, commission_pct: e.target.value })} />
+            </Field>
+            {moneyField("fixed_fee_cents", "Fixed fee per unit (optional)", "Blank = not specified.")}
+          </>
+        )}
+        {model === "custom" && (
+          <>
+            {moneyField("agreed_price_cents", "Agreed price", f.status === "agreed" ? "Required." : undefined)}
+            <Field label="Custom terms" required={f.status === "agreed"} wide error={fe("custom_terms")} hint="Explain how SB is paid (rebates, tiers, minimums…). Nothing is calculated automatically.">
+              <textarea rows={2} value={f.custom_terms} onChange={(e) => setF({ ...f, custom_terms: e.target.value })} />
+            </Field>
+            {moneyField("selling_price_cents", "Marketplace selling price (optional)")}
+            <Field label="Commission % (optional, reference only)" error={fe("commission_pct")}>
+              <input inputMode="decimal" value={f.commission_pct} placeholder="Not specified" onChange={(e) => setF({ ...f, commission_pct: e.target.value })} />
+            </Field>
+            {moneyField("fixed_fee_cents", "Fixed fee per unit (optional, reference only)")}
+          </>
+        )}
+        {model === "direct" && moneyField("agreed_price_cents", "Agreed customer price", f.status === "agreed" ? "Required." : undefined)}
+        {model && (
+          <div className="calc wide interpret" aria-live="polite">
+            <span className="label">{live.modelLabel}</span> — {live.sbReceivesCents != null ? <>SB receives <strong>{money(live.sbReceivesCents)}</strong> per gift</> : <strong>SB's amount not calculated</strong>}
+            <div className="hint">{live.explanation}</div>
+            {live.notes.map((n, i) => <div key={i} className="hint">{n}</div>)}
+          </div>
+        )}
         {moneyField("customer_shipping_cents", "Customer shipping charge")}
-        <Field label="Marketplace fee — commission %" error={fe("commission_pct")} hint={terms?.fee_note ? `Channel fee terms: ${terms.fee_note}` : undefined}>
-          <input inputMode="decimal" value={f.commission_pct} placeholder="Unknown" onChange={(e) => setF({ ...f, commission_pct: e.target.value })} />
-        </Field>
-        {moneyField("fixed_fee_cents", "Marketplace fee — fixed per unit")}
         <Field label="Effective from" error={fe("effective_from")}><input type="date" value={f.effective_from} onChange={(e) => setF({ ...f, effective_from: e.target.value })} /></Field>
         <Field label="Effective to" error={fe("effective_to")}><input type="date" value={f.effective_to} onChange={(e) => setF({ ...f, effective_to: e.target.value })} /></Field>
         {f.status === "agreed" && <Field label="Approved by" required error={fe("approved_by")}><input value={f.approved_by} onChange={(e) => setF({ ...f, approved_by: e.target.value })} maxLength={80} /></Field>}

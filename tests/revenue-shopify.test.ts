@@ -236,7 +236,7 @@ describe("summary and reconciliation", () => {
   it("never lets a price change recalculate imported revenue", async () => {
     const before = (await call("GET", "/revenue/summary?from=2026-09&to=2026-09")).body.totals.combined_cents;
     const g = (await call("POST", "/products", { ...S, name: "Synthetic gift", selected: true })).body.product;
-    await call("POST", "/pricing", { ...S, channel_id: channels["Postal.io / Postal"].id, product_id: g.id, fulfillment_format: "individual", proposed_supplier_cents: 999 });
+    await call("POST", "/pricing", { ...S, channel_id: channels["Postal.io / Postal"].id, product_id: g.id, fulfillment_format: "individual", pricing_model: "fixed_supplier", proposed_supplier_cents: 999 });
     expect((await call("GET", "/revenue/summary?from=2026-09&to=2026-09")).body.totals.combined_cents).toBe(before);
   });
 });

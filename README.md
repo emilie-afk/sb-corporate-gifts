@@ -11,7 +11,7 @@ Independent of the team's task tracker (no links or sync).
 | `src/` | React SPA (Vite). Screens: `Marketplaces`, `Pricing` (+ `PricingForm`, `PricingImport`, `Gifts`, `Refresh`), `Revenue` |
 | `shared/corporateOrders.js` | Shopify-export → minimal order payload (runs in the browser; proposed for the GP collector) |
 | `docs/COLLECTOR_CONTRACT.md` | Ingestion endpoint, payload, privacy rules, revenue treatment, proposed collector change |
-| `docs/TEAM_GUIDE.md` | Short team instructions (pricing, Excel import, matching rules, revenue review) |
+| `docs/TEAM_GUIDE.md` | Short team instructions (pricing models, pricing file import, matching rules, revenue review) |
 | `netlify/functions/api.ts` | Single function serving `/api/*` |
 | `server/` | API: auth, router, validation, audit, routes, Shopify/Sheets/cost logic |
 | `db/migrations/*.sql` | Schema (constraints, overlap exclusion, immutability trigger) |
@@ -107,16 +107,24 @@ Collection membership can be imported for `succulentsbox.com/collections/<handle
 Conventions: every mutation needs `signer_name` and (for edits) the record's `version` — a stale version returns
 `409 conflict`. Validation errors return `400` with `error.details.fields`. Money is integer cents; `null` = unknown.
 
-## Pricing references and Excel import
+## Pricing models, references and pricing file import
 
+- Pricing models (`shared/pricingModel.ts`, used by the API, the import and the screens): `fixed_supplier`
+  (`supplier_price_cents` = what SB receives; commission/fee refused, also by a database constraint),
+  `commission` (`selling_price_cents` + `commission_basis` + optional `commission_pct` / `fixed_fee_cents`),
+  `custom` (`agreed_price_cents` + `custom_terms`), `direct` (Direct website only). `agreed_price_cents` is derived
+  from the model's own price for fixed/commission. Model-specific fields are required only when agreed/active.
+  Records created before migration 004 keep `pricing_model = null` ("Model not specified").
 - `GET /api/pricing/references?product_id&channel_id` returns the current website retail price, the latest
   confirmed Product Master cost (basis, pack quantity, inclusions) and channel defaults. Pricing records store
   `retail_source` / `cost_source` (`shopify`, `product_master`, `manual`) with details; typed reference numbers are
   refused unless sent as `retail_override` / `cost_override` `{cents, reason, source, date}`.
-- Excel: `GET /api/pricing-import/template`, `POST /api/pricing-import/preview` (base64 .xlsx ≤ 2 MB),
-  `POST /api/pricing-import/:id/preview` (mapping / gift resolutions), `POST /api/pricing-import/:id/confirm`,
-  `POST /api/pricing-import/:id/discard`. The workbook is never stored — only parsed values, file name, SHA-256,
-  date and signer.
+- Pricing files (.xlsx or .csv ≤ 2 MB, any layout): `GET /api/pricing-import/template` (optional),
+  `POST /api/pricing-import/preview` (base64 file), `POST /api/pricing-import/:id/preview` (`sheet`, `header_row`,
+  `mapping`, `settings` {channel_id, pricing_model, commission_basis, fulfillment_format, status}, `resolutions`,
+  `row_models`), `POST /api/pricing-import/:id/confirm`, `POST /api/pricing-import/:id/discard`. The file is never
+  stored; parsed values of the chosen worksheet, file name, SHA-256, date and signer are kept (other worksheets'
+  values are dropped on confirm/discard).
 
 ## Shopify revenue
 

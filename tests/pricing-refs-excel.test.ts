@@ -18,10 +18,12 @@ async function xlsx(rows: (string | number | Date | null | { formula: string })[
   if (tamper) { const z = await JSZip.loadAsync(buf); tamper(z); buf = Buffer.from(await z.generateAsync({ type: "nodebuffer" })); }
   return { filename: name, file_base64: buf.toString("base64") };
 }
-const HEAD = ["Channel", "Shopify variant ID", "Gift SKU", "Gift name (reference only)", "Proposed supplier price", "Agreed selling price",
-  "Customer shipping charge", "Marketplace commission %", "Fixed fee per unit", "MOQ", "Fulfillment format", "Status", "Effective from", "Effective to",
-  "Approved by", "Notes", "Retail reference override", "Internal gift cost override", "Override source / note"];
-const row = (o: Partial<Record<string, any>>) => HEAD.map((h) => (h in o ? o[h] : null));
+const HEAD = ["Channel", "Shopify variant ID", "Gift SKU", "Gift name (reference only)", "Pricing model", "Agreed supplier price (SB receives)",
+  "Marketplace selling price", "Agreed price (custom terms)", "Proposed supplier price", "Commission % (optional)", "Fixed fee per unit (optional)",
+  "Commission basis (optional)", "Custom terms", "Customer shipping charge", "MOQ", "Fulfillment format", "Status", "Effective from", "Effective to",
+  "Approved by", "Notes", "SB retail price override", "Internal gift cost override", "Override source / note"];
+const SUP = "Agreed supplier price (SB receives)";
+const row = (o: Partial<Record<string, any>>) => HEAD.map((h) => (h in o ? o[h] : h === "Pricing model" ? "Fixed supplier price" : null));
 
 beforeAll(async () => {
   await resetDb();
@@ -61,22 +63,22 @@ describe("pricing form references", () => {
     expect(m.suggested_direct_price_cents).toBeNull(); // the direct discount never sets marketplace prices
   });
   it("keeps unknown cost unknown and rejects typed reference numbers", async () => {
-    const rec = (await call("POST", "/pricing", { ...S, channel_id: ch["Goody"].id, product_id: giftB.id, fulfillment_format: "individual" })).body.record;
+    const rec = (await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: ch["Goody"].id, product_id: giftB.id, fulfillment_format: "individual" })).body.record;
     expect(rec).toMatchObject({ retail_ref_cents: 3000, retail_source: "shopify", internal_cost_cents: null, cost_source: null });
-    const typed = await call("POST", "/pricing", { ...S, channel_id: ch["Goody"].id, product_id: giftB.id, fulfillment_format: "individual", internal_cost_cents: 0 });
+    const typed = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: ch["Goody"].id, product_id: giftB.id, fulfillment_format: "individual", internal_cost_cents: 0 });
     expect(typed.status).toBe(400);
   });
   it("manual values need reason, source and date and are labelled manual", async () => {
-    const bad = await call("POST", "/pricing", { ...S, channel_id: ch["Snappy"].id, product_id: giftB.id, fulfillment_format: "individual", cost_override: { cents: 1500 } });
+    const bad = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: ch["Snappy"].id, product_id: giftB.id, fulfillment_format: "individual", cost_override: { cents: 1500 } });
     expect(bad.status).toBe(400);
-    const ok = await call("POST", "/pricing", { ...S, channel_id: ch["Snappy"].id, product_id: giftB.id, fulfillment_format: "individual",
+    const ok = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: ch["Snappy"].id, product_id: giftB.id, fulfillment_format: "individual",
       cost_override: { cents: 1500, reason: "Vendor quote before Product Master update", source: "Email quote Q-SYN-1", date: "2026-10-01" } });
     expect(ok.body.record).toMatchObject({ internal_cost_cents: 1500, cost_source: "manual" });
     expect(ok.body.record.cost_source_detail).toMatchObject({ reason: "Vendor quote before Product Master update", source: "Email quote Q-SYN-1" });
   });
   it("agreed prices snapshot references; later refreshes show current values separately; revise creates a new version", async () => {
-    const rec = (await call("POST", "/pricing", { ...S, channel_id: ch["Reachdesk"].id, product_id: giftA.id, fulfillment_format: "individual",
-      status: "agreed", agreed_price_cents: 1800, approved_by: "Lead", payment_terms: "Net 30" })).body.record;
+    const rec = (await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: ch["Reachdesk"].id, product_id: giftA.id, fulfillment_format: "individual",
+      status: "agreed", supplier_price_cents: 1800, approved_by: "Lead", payment_terms: "Net 30" })).body.record;
     expect(rec).toMatchObject({ snapshot_cost_cents: 2000, snapshot_retail_cents: 2800, cost_source: "product_master" });
     // cost rises 12 → 14 per gift, retail 25 → 28 (example from the brief, scaled)
     sheetValues = [["SKU", "Unit cost"], ["SYN-TY-S", 4.4]];
@@ -85,7 +87,7 @@ describe("pricing form references", () => {
     await getPool().query("update products set web_price_cents = 3200 where id = $1", [giftA.id]);
     const now = (await call("GET", `/pricing/${rec.id}`)).body.record;
     expect(now).toMatchObject({ agreed_price_cents: 1800, snapshot_cost_cents: 2000, snapshot_retail_cents: 2800, current_cost_cents: 2200, current_retail_cents: 3200 });
-    const rev = (await call("POST", `/pricing/${rec.id}/revisions`, { ...S, agreed_price_cents: 2000 })).body.record;
+    const rev = (await call("POST", `/pricing/${rec.id}/revisions`, { ...S, supplier_price_cents: 2000 })).body.record;
     expect(rev).toMatchObject({ previous_record_id: rec.id, internal_cost_cents: 2200, retail_ref_cents: 3200, status: "draft" });
     expect((await call("GET", `/pricing/${rec.id}`)).body.record.internal_cost_cents).toBe(2000);
   });
@@ -112,9 +114,13 @@ describe("Excel pricing import", () => {
     await call("POST", `/pricing-import/${r.body.batch_id}/discard`, S);
   });
   it("rejects formulas and macro-enabled files", async () => {
-    const f = await call("POST", "/pricing-import/preview", { ...S, ...(await xlsx([HEAD, row({ Channel: "Goody", "Gift SKU": "SYN-TY-S", "Agreed selling price": { formula: "1+1" }, "Fulfillment format": "Individual", Status: "Draft" })])) });
-    expect(f.status).toBe(400);
-    expect(f.body.error.message).toMatch(/Formulas are not accepted/);
+    const f = await call("POST", "/pricing-import/preview", { ...S, ...(await xlsx([HEAD, row({ Channel: "Goody", "Gift SKU": "SYN-TY-S", [SUP]: { formula: "1+1" }, "Fulfillment format": "Individual", Status: "Draft" })])) });
+    // the worksheet is refused (another worksheet could still be chosen); nothing can be saved from it
+    expect(f.status).toBe(200);
+    expect(f.body.sheet_error).toMatch(/Formulas are not accepted/);
+    expect(f.body.rows).toEqual([]);
+    const cf = await call("POST", `/pricing-import/${f.body.batch_id}/confirm`, { ...S, selected: ["row 2"], version: f.body.version });
+    expect(cf.status).toBe(400);
     const m = await call("POST", "/pricing-import/preview", { ...S, ...(await xlsx([HEAD], "prices.xlsm")) });
     expect(m.body.error.message).toMatch(/macro/i);
     const vba = await call("POST", "/pricing-import/preview", { ...S, ...(await xlsx([HEAD], "prices.xlsx", (z) => z.file("xl/vbaProject.bin", "x"))) });
@@ -130,8 +136,8 @@ describe("Excel pricing import", () => {
       row({ Channel: "Goody", "Gift SKU": "SYN-BD-S", "Fulfillment format": "Individual", Status: "Draft", "Proposed supplier price": "-3" }),
       row({ Channel: "Unknown Co", "Gift SKU": "SYN-BD-S", "Fulfillment format": "Individual", Status: "Draft" }),
       row({ Channel: "CorporateGift.com", "Shopify variant ID": String(potsSucc.shopify_variant_id), "Fulfillment format": "Individual", Status: "Proposed" }),
-      row({ Channel: "Loop & Tie", "Gift SKU": "SYN-BD-S", "Fulfillment format": "Bulk — one location", Status: "Agreed", "Agreed selling price": "21.50", "Marketplace commission %": 150 }),
-      row({ Channel: "Teak & Twine", "Gift SKU": "SYN-BD-S", "Fulfillment format": "Bulk — one location", Status: "Agreed", "Agreed selling price": 22, "Retail reference override": 31, "Override source / note": "Wholesale list 2026" }),
+      row({ Channel: "Loop & Tie", "Gift SKU": "SYN-BD-S", "Fulfillment format": "Bulk — one location", Status: "Agreed", [SUP]: "21.50", "Commission % (optional)": 150 }),
+      row({ Channel: "Teak & Twine", "Gift SKU": "SYN-BD-S", "Fulfillment format": "Bulk — one location", Status: "Agreed", [SUP]: 22, "SB retail price override": 31, "Override source / note": "Wholesale list 2026" }),
       row({ Channel: "Teak & Twine", "Gift SKU": "SYN-BD-S", "Fulfillment format": "Bulk — one location", Status: "Draft" }),
     ], "synthetic-pricing.xlsx");
     const r = await call("POST", "/pricing-import/preview", { ...S, ...file });
@@ -181,11 +187,11 @@ describe("Excel pricing import", () => {
     expect(draft).toMatchObject({ proposed_supplier_cents: 2050, status: "proposed" });
 
     // agreed record (Reachdesk, created earlier in the form tests) → changed price needs version confirmation
-    r = await call("POST", "/pricing-import/preview", { ...S, ...(await xlsx([HEAD, row({ Channel: "Reachdesk", "Gift SKU": "SYN-TY-S", "Agreed selling price": 19, "Fulfillment format": "Individual", Status: "Agreed" })], "ver.xlsx")) });
+    r = await call("POST", "/pricing-import/preview", { ...S, ...(await xlsx([HEAD, row({ Channel: "Reachdesk", "Gift SKU": "SYN-TY-S", [SUP]: 19, "Fulfillment format": "Individual", Status: "Agreed" })], "ver.xlsx")) });
     expect(r.body.rows[0].action).toBe("update_draft"); // the open revision draft is the head
   });
   it("flags overlapping active periods and supersedes an earlier active price only when valid", async () => {
-    const mk = (from: string, price: number, name: string) => xlsx([HEAD, row({ Channel: "Snappy", "Shopify variant ID": "91000001", "Agreed selling price": price, "Fulfillment format": "Bulk — one location", Status: "Active", "Effective from": from })], name);
+    const mk = (from: string, price: number, name: string) => xlsx([HEAD, row({ Channel: "Snappy", "Shopify variant ID": "91000001", [SUP]: price, "Fulfillment format": "Bulk — one location", Status: "Active", "Effective from": from })], name);
     let r = await call("POST", "/pricing-import/preview", { ...S, ...(await mk("2026-10-01", 18, "a1.xlsx")) });
     expect(r.body.rows[0]).toMatchObject({ valid: true, action: "create" });
     await call("POST", `/pricing-import/${r.body.batch_id}/confirm`, { ...S, selected: ["row 2"], version: r.body.version });
@@ -213,13 +219,13 @@ describe("Excel pricing import", () => {
     ], "partner-layout.xlsx");
     let r = await call("POST", "/pricing-import/preview", { ...S, ...file });
     expect(r.body.missing.length).toBeGreaterThan(0);
-    r = await call("POST", `/pricing-import/${r.body.batch_id}/preview`, { ...S, mapping: { channel: "Partner", variant_id: "Variant", proposed_supplier_price: "Deal price", fulfillment_format: "Format", status: "Stage", retail_override: "List price", override_note: "Where from" } });
+    r = await call("POST", `/pricing-import/${r.body.batch_id}/preview`, { ...S, mapping: { channel: "Partner", variant_id: "Variant", proposed_supplier_price: "Deal price", fulfillment_format: "Format", status: "Stage", retail_override: "List price", override_note: "Where from" }, settings: { pricing_model: "fixed_supplier" } });
     expect(r.body.missing).toEqual([]);
     expect(r.body.rows[0]).toMatchObject({ valid: true, action: "create" });
     await call("POST", `/pricing-import/${r.body.batch_id}/confirm`, { ...S, selected: ["row 2"], version: r.body.version });
     const rec = (await call("GET", `/pricing?channel_id=${ch["Packed with Purpose"].id}`)).body.pricing[0];
     expect(rec).toMatchObject({ retail_ref_cents: 3300, retail_source: "manual", proposed_supplier_cents: 2500 });
-    expect(rec.retail_source_detail.source).toMatch(/Excel partner-layout\.xlsx, row 2/);
+    expect(rec.retail_source_detail.source).toMatch(/File partner-layout\.xlsx, row 2/);
     // Shopify/Product Master values are untouched
     expect((await call("GET", `/products/${giftB.id}`)).body.product.web_price_cents).toBe(3000);
   });

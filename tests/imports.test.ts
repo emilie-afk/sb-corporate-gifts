@@ -103,7 +103,7 @@ describe("Product Master refresh (fake read-only sheet)", () => {
 
   it("agreed prices keep their cost snapshot after a cost change; failures keep the last cost", async () => {
     const ch = (await call("GET", "/channels")).body.channels.find((c: any) => c.name === "Goody");
-    const pr = (await call("POST", "/pricing", { ...S, channel_id: ch.id, product_id: gift.id, fulfillment_format: "individual", status: "agreed", agreed_price_cents: 1800, approved_by: "Lead" })).body.record;
+    const pr = (await call("POST", "/pricing", { ...S, channel_id: ch.id, product_id: gift.id, fulfillment_format: "individual", pricing_model: "fixed_supplier", status: "agreed", supplier_price_cents: 1800, approved_by: "Lead" })).body.record;
     expect(pr.snapshot_cost_cents).toBe(2000);
 
     sheetValues = [["SKU", "Variant", "Unit cost"], ["LTG-1", "Std", 2.8]]; // $14 gift cost
