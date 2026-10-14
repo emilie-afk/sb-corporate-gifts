@@ -116,6 +116,38 @@ await page.locator("tbody tr", { hasText: "Thank You Gift Box — Simple" }).wai
 await page.screenshot({ path: `${OUT}/04-gifts-panel.png` });
 await page.getByRole("button", { name: "Close" }).first().click();
 
+// ---- Inside a marketplace: propose several gifts by category, add several requirements
+await page.getByRole("tab", { name: "Marketplaces" }).click();
+await page.getByRole("button", { name: "Reachdesk" }).click();
+const det = page.getByRole("dialog").filter({ hasText: "Setup checklist" });
+await det.getByRole("button", { name: "Propose several" }).click();
+const bp = page.getByRole("dialog", { name: "Propose several products" });
+await bp.getByRole("combobox", { name: /^Gift category/ }).selectOption("live_to_give_box");
+await bp.getByRole("button", { name: "Next: review gifts" }).click();
+await bp.getByText("Step 2 of 2").waitFor();
+check("propose several: category finds the selected Live to Give gift", (await bp.getByRole("checkbox", { name: /Propose Thank You Gift Box — Simple/ }).isChecked()));
+await sign(page);
+await page.screenshot({ path: `${OUT}/03d-propose-several.png` });
+await bp.getByRole("button", { name: /Propose 1 gift/ }).click();
+await det.locator(".card", { hasText: "Thank You Gift Box — Simple" }).waitFor();
+check("propose several: proposal saved on the marketplace", true);
+await det.getByRole("button", { name: "Add several" }).click();
+const br = page.getByRole("dialog", { name: "Add several requirements" });
+await br.getByRole("textbox", { name: /^Requirements/ }).fill("- Example: ship within 2 business days\n- Example: branded packing slip\n- Example: ship within 2 business days");
+await br.getByRole("combobox", { name: /^Category for all/ }).selectOption("fulfillment");
+await br.getByRole("button", { name: "Next: set categories" }).click();
+await br.getByText(/Repeated \(same as line 1\)/).waitFor();
+check("add several requirements: repeated line flagged", true);
+await br.getByRole("button", { name: "Remove them" }).click();
+await br.getByLabel("Category of line 2").selectOption("product");
+await sign(page);
+await page.screenshot({ path: `${OUT}/03e-requirements-several.png` });
+await br.getByRole("button", { name: "Add 2 requirements" }).click();
+await det.getByText("Example: branded packing slip").waitFor();
+check("add several requirements: 2 saved with their categories", (await det.locator(".card", { hasText: "Example: branded packing slip" }).innerText()).includes("Product"));
+await page.getByRole("button", { name: "Close" }).first().click();
+await page.getByRole("tab", { name: "Pricing" }).click();
+
 await page.getByRole("button", { name: "Add pricing record" }).click();
 const pf = page.getByRole("dialog", { name: "Add pricing record" });
 await pf.getByLabel("Channel").selectOption({ label: "Direct website" });

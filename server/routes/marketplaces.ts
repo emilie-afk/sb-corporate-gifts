@@ -3,7 +3,8 @@ import { Router, updateVersioned } from "../router";
 import { query, one, tx } from "../db";
 import type pg from "pg";
 import { audit, type Actor } from "../audit";
-import { badRequest, conflict, notFound } from "../http";
+import { HttpError, badRequest, conflict, notFound } from "../http";
+import { fetchCollectionProductIds } from "../lib/shopify";
 import { parse, text, reqText, url, email, date, version, assertUuid, defined } from "../validate";
 import { DEFAULT_MILESTONES } from "../../db/seed/providers";
 
@@ -305,6 +306,44 @@ export function marketplaceRoutes(r: Router) {
     });
   });
 
+  /** Several requirements at once (one per line), with a category each; shared state, source and date. */
+  r.post("/marketplaces/:id/requirements/bulk", async ({ params, body, actor }) => {
+    const b = await body();
+    const a = actor(b);
+    const m = await loadMarketplace(params.id);
+    const d = parse(z.object({
+      dry_run: z.boolean().default(false),
+      items: z.array(z.object({ category: reqSchema.shape.category, requirement: reqText(4000) })).min(1, "Add at least one requirement").max(200, "Up to 200 at a time"),
+      confirmation_state: z.enum(["unverified", "awaiting_clarification", "confirmed"]).default("unverified"),
+      source_ref: text(2000),
+      verified_on: date,
+    }), b);
+    const key = (t: string) => t.replace(/\s+/g, " ").trim().toLowerCase();
+    const have = new Set((await query("select requirement from requirements where marketplace_id = $1 and removed_at is null", [m.id])).map((x) => key(x.requirement)));
+    const seen = new Map<string, number>();
+    const rows = d.items.map((it, i) => {
+      const errors: string[] = [];
+      const k = key(it.requirement);
+      if (have.has(k)) errors.push("Already recorded for this marketplace");
+      if (seen.has(k)) errors.push(`Repeated (same as line ${seen.get(k)! + 1})`); else seen.set(k, i);
+      return { line: i + 1, category: it.category, requirement: it.requirement.trim(), errors };
+    });
+    const invalid = rows.filter((r) => r.errors.length).length;
+    if (d.dry_run) return { rows, invalid };
+    if (invalid) throw badRequest(`${invalid} requirement(s) can't be added. Fix or remove them and try again.`);
+    const confirmed = d.confirmation_state === "confirmed";
+    return tx(async (c) => {
+      for (const r of rows) {
+        const ins = await c.query(
+          `insert into requirements (marketplace_id, category, requirement, confirmation_state, source_ref, verified_on, confirmed_by, confirmed_at, created_by)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *`,
+          [m.id, r.category, r.requirement, d.confirmation_state, d.source_ref ?? null, d.verified_on ?? null, confirmed ? a.signer : null, confirmed ? new Date() : null, a.signer]);
+        await audit(c, a, { entityType: "requirement", entityId: ins.rows[0].id, marketplaceId: m.id, action: "create", after: { ...ins.rows[0], bulk: true } });
+      }
+      return { created: rows.length };
+    });
+  });
+
   r.patch("/marketplaces/:id/requirements/:rid", async ({ params, body, actor }) => {
     const b = await body();
     const a = actor(b);
@@ -413,6 +452,91 @@ export function marketplaceRoutes(r: Router) {
       );
       await audit(c, a, { entityType: "marketplace_product", entityId: ins.rows[0].id, marketplaceId: params.id, action: "create", after: ins.rows[0] });
       return { proposal: ins.rows[0] };
+    });
+  });
+
+  // ------------------------------------------------ bulk: propose several gifts
+  const FAMILIES = ["live_to_give_box", "succulent_arrangement", "airplant_gift_set", "plant_only", "custom_pots", "pots_plus_succulents", "watering_can", "other"] as const;
+  /** Gifts to choose from: a gift category, a succulentsbox.com collection link, or gifts picked one by one. */
+  r.post("/marketplaces/:id/products/candidates", async ({ params, body }) => {
+    const b = await body();
+    const m = await loadMarketplace(params.id);
+    const d = parse(z.object({
+      source: z.enum(["family", "collection", "picked"]),
+      family: z.enum(FAMILIES).optional(),
+      collection_url: z.string().trim().max(500).optional(),
+      product_ids: z.array(z.string().uuid()).max(300).optional(),
+      selected_only: z.boolean().default(true),
+    }), b);
+    const where = ["p.archived_at is null"];
+    const args: unknown[] = [];
+    let note: string | null = null;
+    if (d.source === "family") {
+      if (!d.family) throw badRequest("Choose a gift category.", { fields: { family: "Required" } });
+      args.push(d.family); where.push(`p.family = $${args.length}`);
+    } else if (d.source === "collection") {
+      const mm = /^(?:https?:\/\/)?(?:www\.)?succulentsbox\.com\/collections\/([a-z0-9][a-z0-9-]*)\/?(?:[?#].*)?$/i.exec(d.collection_url ?? "");
+      if (!mm) throw badRequest("Paste a succulentsbox.com/collections/… link.", { fields: { collection_url: "Not a succulentsbox.com collection link" } });
+      let ids: number[];
+      try { ids = await fetchCollectionProductIds(mm[1].toLowerCase()); }
+      catch (e: any) { throw new HttpError(502, "upstream", `Could not read that collection from the website (${e.message}). Check the link and try again.`); }
+      if (!ids.length) throw badRequest("That collection has no products on the website (or the link is wrong).", { fields: { collection_url: "Empty collection" } });
+      args.push(ids); where.push(`p.shopify_product_id = any($${args.length}::bigint[])`);
+      note = `${ids.length} product(s) on the website collection “${mm[1].toLowerCase()}”`;
+    } else {
+      if (!d.product_ids?.length) throw badRequest("Pick at least one gift.");
+      args.push(d.product_ids); where.push(`p.id = any($${args.length}::uuid[])`);
+    }
+    if (d.selected_only && d.source !== "picked") where.push("p.selected");
+    args.push(m.id);
+    const rows = await query(
+      `select p.id, p.name, p.variant, p.sku, p.family, p.selected, p.web_price_cents,
+              (select mp.proposal_status from marketplace_products mp where mp.marketplace_id = $${args.length} and mp.product_id = p.id and mp.removed_at is null
+                order by mp.created_at desc limit 1) as existing_status
+       from products p where ${where.join(" and ")} order by lower(p.name), p.variant nulls first limit 500`, args);
+    return { gifts: rows, note };
+  });
+
+  r.post("/marketplaces/:id/products/bulk", async ({ params, body, actor }) => {
+    const b = await body();
+    const a = actor(b);
+    const m = await loadMarketplace(params.id);
+    const d = parse(z.object({
+      dry_run: z.boolean().default(false),
+      items: z.array(z.object({ product_id: z.string().uuid(), offer_type: z.enum(["individual", "bulk_customized", "bulk"]) }))
+        .min(1, "Select at least one gift").max(300, "Up to 300 gifts at a time"),
+      proposal_status: z.enum(["proposed", "submitted", "approved", "declined", "withdrawn"]).default("proposed"),
+      offer_note: text(2000),
+      submitted_on: date,
+    }), b);
+    const ids = d.items.map((i) => i.product_id);
+    const prods = new Map((await query("select id, name, variant, family, archived_at from products where id = any($1::uuid[])", [ids])).map((p) => [p.id, p]));
+    const existing = new Set((await query("select product_id from marketplace_products where marketplace_id = $1 and removed_at is null", [m.id])).map((x) => x.product_id));
+    const seen = new Set<string>();
+    const rows = d.items.map((it) => {
+      const p = prods.get(it.product_id);
+      const errors: string[] = [];
+      if (!p || p.archived_at) errors.push("Unknown or archived gift");
+      if (existing.has(it.product_id)) errors.push("Already proposed to this marketplace");
+      if (seen.has(it.product_id)) errors.push("Listed twice");
+      seen.add(it.product_id);
+      if (p?.family === "pots_plus_succulents" && it.offer_type === "individual") errors.push("Pots with succulents are bulk orders only — choose a bulk offer type");
+      return { product_id: it.product_id, offer_type: it.offer_type, name: p ? [p.name, p.variant].filter(Boolean).join(" — ") : null, errors };
+    });
+    const invalid = rows.filter((r) => r.errors.length).length;
+    if (d.dry_run) return { rows, invalid };
+    if (invalid) throw badRequest(`${invalid} gift(s) can't be proposed. Fix or untick them and try again.`);
+    return tx(async (c) => {
+      const out = [];
+      for (const r of rows) {
+        const ins = await c.query(
+          `insert into marketplace_products (marketplace_id, product_id, proposal_status, offer_type, offer_note, submitted_on, created_by)
+           values ($1,$2,$3,$4,$5,$6,$7) returning *`,
+          [m.id, r.product_id, d.proposal_status, r.offer_type, d.offer_note ?? null, d.submitted_on ?? null, a.signer]);
+        await audit(c, a, { entityType: "marketplace_product", entityId: ins.rows[0].id, marketplaceId: m.id, action: "create", after: { ...ins.rows[0], bulk: true } });
+        out.push(ins.rows[0]);
+      }
+      return { created: out.length };
     });
   });
 

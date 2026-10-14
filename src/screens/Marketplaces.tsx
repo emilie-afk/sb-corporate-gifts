@@ -7,6 +7,7 @@ import {
 } from "../components/ui";
 import { ProductPicker, type ProductLite } from "../components/ProductPicker";
 import { BulkAddMarketplaces } from "./BulkAddMarketplaces";
+import { BulkProposeProducts, BulkRequirements } from "./MarketplaceBulk";
 import {
   STATUS_LABEL, STATUSES, INACTIVE, REASON_LABEL, PROVIDER_LABEL, SUPPLIER_HELP, CATEGORY_LABEL, CONFIRM_LABEL, METHOD_LABEL,
   PROPOSAL_LABEL, OFFER_LABEL, FAMILY_LABEL, TRI_LABEL, date, dateTime, today, productLabel, pct,
@@ -328,6 +329,7 @@ function MilestoneAction({ mid, m, action, onClose, onSaved }: { mid: string; m?
 // ---------------------------------------------------------- requirements
 function Requirements({ mid, items, onChanged }: { mid: string; items: any[]; onChanged: () => void }) {
   const [edit, setEdit] = useState<any | null>(null);
+  const [bulk, setBulk] = useState(false);
   return (
     <>
       {items.length === 0 && <Empty>No requirements recorded.</Empty>}
@@ -350,7 +352,11 @@ function Requirements({ mid, items, onChanged }: { mid: string; items: any[]; on
           </div>
         ))}
       </div>
-      <button className="btn small" onClick={() => setEdit({})}>Add requirement</button>
+      <div className="row-gap">
+        <button className="btn small" onClick={() => setEdit({})}>Add requirement</button>
+        <button className="btn small" onClick={() => setBulk(true)}>Add several</button>
+      </div>
+      {bulk && <BulkRequirements mid={mid} onClose={() => setBulk(false)} onSaved={() => { setBulk(false); onChanged(); }} />}
       {edit && <RequirementForm mid={mid} r={edit} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); onChanged(); }} />}
     </>
   );
@@ -395,6 +401,7 @@ function RequirementForm({ mid, r, onClose, onSaved }: { mid: string; r: any; on
 // ------------------------------------------------------------- proposals
 function Proposals({ mid, items, onChanged }: { mid: string; items: any[]; onChanged: () => void }) {
   const [edit, setEdit] = useState<any | null>(null);
+  const [bulk, setBulk] = useState(false);
   return (
     <>
       {items.length === 0 && <Empty>No products proposed yet. Select gifts maintained in Pricing → Gifts.</Empty>}
@@ -421,7 +428,11 @@ function Proposals({ mid, items, onChanged }: { mid: string; items: any[]; onCha
           </div>
         ))}
       </div>
-      <button className="btn small" onClick={() => setEdit({})}>Propose product</button>
+      <div className="row-gap">
+        <button className="btn small" onClick={() => setEdit({})}>Propose product</button>
+        <button className="btn small" onClick={() => setBulk(true)}>Propose several</button>
+      </div>
+      {bulk && <BulkProposeProducts mid={mid} onClose={() => setBulk(false)} onSaved={() => { setBulk(false); onChanged(); }} />}
       {edit && <ProposalForm mid={mid} p={edit} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); onChanged(); }} />}
     </>
   );
