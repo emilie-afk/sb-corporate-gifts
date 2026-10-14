@@ -78,6 +78,27 @@ await page.locator("tr.muted-row", { hasText: "Snappy" }).waitFor();
 check("toggle shows muted readable row with status label", (await page.locator("tr.muted-row", { hasText: "On hold" }).count()) === 1);
 await page.screenshot({ path: `${OUT}/03-marketplaces-with-inactive.png`, fullPage: true });
 
+// ---- Add marketplaces in bulk: names first, then tick a status per name
+await page.getByRole("button", { name: "Add in bulk" }).click();
+const bk = page.getByRole("dialog", { name: "Add marketplaces in bulk" });
+await bk.getByLabel("Names").fill("1. Example Gifting One\n- Example Gifting Two\nGoody\n\nExample Supplier Three");
+check("bulk step 1 counts the pasted names (bullets/numbers removed)", (await bk.getByText("4 names").count()) === 1);
+await page.screenshot({ path: `${OUT}/03b-bulk-add-names.png` });
+await bk.getByRole("button", { name: "Next: choose statuses" }).click();
+await bk.getByText("Step 2 of 2").waitFor();
+check("bulk step 2 flags a name that already exists", (await bk.getByText(/Already exists as “Goody”/).count()) === 1);
+await bk.getByRole("button", { name: "Remove them" }).click();
+await bk.getByRole("checkbox", { name: "Example Gifting Two: In discussion" }).check();
+await bk.getByRole("checkbox", { name: "Example Supplier Three: Live" }).check();
+await bk.getByLabel("Type of Example Supplier Three").selectOption("supplier_opportunity");
+check("one status per name (ticking another unticks Prospect)", !(await bk.getByRole("checkbox", { name: "Example Gifting Two: Prospect" }).isChecked()));
+await sign(page);
+await page.screenshot({ path: `${OUT}/03c-bulk-add-statuses.png` });
+await bk.getByRole("button", { name: "Add 3 marketplaces" }).click();
+await page.getByText("3 marketplaces added.").waitFor();
+check("bulk add saved 3 records with their statuses",
+  (await page.locator("tbody tr", { hasText: "Example Gifting Two" }).innerText()).includes("In discussion"));
+
 // ---- Pricing: select a gift, then add Direct website pricing
 await page.getByRole("tab", { name: "Pricing" }).click();
 await page.getByRole("button", { name: "Gifts & collections" }).click();

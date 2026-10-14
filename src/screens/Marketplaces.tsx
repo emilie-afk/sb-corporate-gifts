@@ -6,6 +6,7 @@ import {
   useLoad, useSave, useSigner, rememberSigner, useDebounced, usePref,
 } from "../components/ui";
 import { ProductPicker, type ProductLite } from "../components/ProductPicker";
+import { BulkAddMarketplaces } from "./BulkAddMarketplaces";
 import {
   STATUS_LABEL, STATUSES, INACTIVE, REASON_LABEL, PROVIDER_LABEL, SUPPLIER_HELP, CATEGORY_LABEL, CONFIRM_LABEL, METHOD_LABEL,
   PROPOSAL_LABEL, OFFER_LABEL, FAMILY_LABEL, TRI_LABEL, date, dateTime, today, productLabel, pct,
@@ -21,6 +22,8 @@ export function MarketplacesScreen({ params, nav }: { params: Record<string, str
   const [ptype, setPtype] = usePref("mk.ptype", "");
   const [showInactive, setShowInactive] = usePref("mk.inactive", false);
   const [adding, setAdding] = useState(false);
+  const [bulk, setBulk] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const openId = params.m ?? null;
   const list = useLoad(() => get(`/marketplaces${qs({ q: dq, status, provider_type: ptype, include_inactive: showInactive })}`), [dq, status, ptype, showInactive]);
 
@@ -30,6 +33,7 @@ export function MarketplacesScreen({ params, nav }: { params: Record<string, str
         <h1>Marketplaces</h1>
         {list.data && <span className="hint">{list.data.counts.working} working · {list.data.counts.live} live</span>}
         <div className="spacer" />
+        <button className="btn" onClick={() => setBulk(true)}>Add in bulk</button>
         <button className="btn primary" onClick={() => setAdding(true)}>Add marketplace</button>
       </div>
       <div className="filters">
@@ -62,6 +66,8 @@ export function MarketplacesScreen({ params, nav }: { params: Record<string, str
           </table>
         </div>
       )}
+      {notice && <div className="alert success" role="status">{notice} <button className="btn ghost small" onClick={() => setNotice(null)}>Dismiss</button></div>}
+      {bulk && <BulkAddMarketplaces onClose={() => setBulk(false)} onSaved={(n) => { setBulk(false); setNotice(`${n} marketplace${n === 1 ? "" : "s"} added.`); list.reload(); }} />}
       {adding && <MarketplaceForm onClose={() => setAdding(false)} onSaved={(id) => { setAdding(false); list.reload(); nav("marketplaces", { m: id }); }} />}
       {openId && <MarketplaceDetail id={openId} nav={nav} onClose={() => { nav("marketplaces"); list.reload(); }} onChanged={list.reload} />}
     </div>
