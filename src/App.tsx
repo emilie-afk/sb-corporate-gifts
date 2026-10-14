@@ -4,6 +4,7 @@ import { Loading } from "./components/ui";
 import { MarketplacesScreen } from "./screens/Marketplaces";
 import { PricingScreen } from "./screens/Pricing";
 import { RevenueScreen } from "./screens/Revenue";
+import { Manual } from "./screens/Manual";
 
 type Tab = "marketplaces" | "pricing" | "revenue";
 const TABS: [Tab, string][] = [["marketplaces", "Marketplaces"], ["pricing", "Pricing"], ["revenue", "Revenue"]];
@@ -27,6 +28,7 @@ const AUTH_ERRORS: Record<string, string> = {
 export function App() {
   const [session, setSession] = useState<{ authenticated: boolean; email?: string } | null>(null);
   const [route, setRoute] = useState(readUrl);
+  const [manual, setManual] = useState(() => new URLSearchParams(location.search).get("help") === "1");
 
   useEffect(() => {
     get("/auth/session").then(setSession).catch(() => setSession({ authenticated: false }));
@@ -68,6 +70,7 @@ export function App() {
           ))}
         </nav>
         <div className="account">
+          <button className="btn ghost small" onClick={() => setManual(true)}>How to use</button>
           <span className="who" title="Signed-in Google login">{session.email}</span>
           <button className="btn ghost small" onClick={async () => { await post("/auth/logout").catch(() => {}); setSession({ authenticated: false }); }}>Sign out</button>
         </div>
@@ -77,6 +80,7 @@ export function App() {
         {route.tab === "pricing" && <PricingScreen params={route.params} nav={nav} />}
         {route.tab === "revenue" && <RevenueScreen params={route.params} nav={nav} />}
       </main>
+      {manual && <Manual onClose={() => setManual(false)} />}
     </div>
   );
 }

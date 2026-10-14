@@ -1,5 +1,7 @@
 # Team guide — pricing and revenue (short)
 
+The full start-to-finish manual is in the site: **How to use** (top right). This page is the short reference.
+
 Every save asks for **Your name** — a self-reported signature. The shared Google login only controls access.
 
 ## Adding marketplaces in bulk
