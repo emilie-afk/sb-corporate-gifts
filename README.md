@@ -93,7 +93,7 @@ Collection membership can be imported for `succulentsbox.com/collections/<handle
 ## API (all under `/api`, JSON)
 
 `GET/POST /marketplaces`, `POST /marketplaces/bulk` (`items[{name, provider_type, status}]`, ≤ 200, `dry_run` to check; all-or-nothing), `GET/PATCH /marketplaces/:id`, `POST /marketplaces/:id/status-transitions`,
-`GET/POST /marketplaces/:id/{milestones|requirements|communications|products}`, `PATCH …/:childId`,
+`GET/POST /marketplaces/:id/{milestones|requirements|communications|products}`, `PATCH …/:childId`, `POST /marketplaces/:id/products/candidates` (gift category, succulentsbox.com collection link or picked gifts), `POST /marketplaces/:id/products/bulk`, `POST /marketplaces/:id/requirements/bulk` (both with `dry_run`, all-or-nothing),
 `GET/POST /products`, `GET/PATCH /products/:id`, `POST /products/:id/collections`,
 `GET/POST /products/:id/source-links`, `PATCH …/:linkId`, `GET/POST /collections`, `PATCH /collections/:id`,
 `POST /collections/:id/refresh-membership`, `GET /channels`, `PATCH /channels/:id/terms`,

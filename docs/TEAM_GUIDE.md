@@ -12,6 +12,15 @@ Every save asks for **Your name** — a self-reported signature. The shared Goog
 3. Enter your name and **Add**. Each record gets the default setup milestones; add contacts and details later
    from the record. On hold / Rejected / Not qualified / Inactive need a reason, so set those afterwards.
 
+## Inside a marketplace: several at once
+
+- **Proposed products → Propose several.** Choose gifts by **gift category**, by pasting a **website collection
+  link** (succulentsbox.com/collections/…) or by picking them. Next, untick any you don't want, set the offer type
+  per gift (pots with succulents are always bulk), then one product status, date and note for all. Gifts already
+  proposed to this marketplace are shown greyed out and skipped.
+- **Requirements → Add several.** Paste one requirement per line, pick a category for all, adjust per line, then
+  one confirmation state, source and date for all. Lines already recorded or repeated are flagged.
+
 ## Pricing
 
 1. **Pricing → Add pricing record.** Pick the channel and the gift/variant.
