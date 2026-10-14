@@ -266,3 +266,9 @@ h3.subhead { margin: 8px 0 2px; }
 }
 
 .overlay > .modal.wide-modal { width: min(1180px, 100%); }
+
+/* bulk add marketplaces */
+.bulk-status th.status-col, .bulk-status td.status-col { text-align: center; width: 1%; }
+.bulk-status .col-check { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 600; line-height: 1.2; min-width: 64px; cursor: pointer; }
+.bulk-status .col-check input, .bulk-status td.status-col input { width: 18px; height: 18px; margin: 0; accent-color: var(--brand); cursor: pointer; }
+.bulk-status td select { min-width: 150px; }

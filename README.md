@@ -92,7 +92,7 @@ Collection membership can be imported for `succulentsbox.com/collections/<handle
 
 ## API (all under `/api`, JSON)
 
-`GET/POST /marketplaces`, `GET/PATCH /marketplaces/:id`, `POST /marketplaces/:id/status-transitions`,
+`GET/POST /marketplaces`, `POST /marketplaces/bulk` (`items[{name, provider_type, status}]`, ≤ 200, `dry_run` to check; all-or-nothing), `GET/PATCH /marketplaces/:id`, `POST /marketplaces/:id/status-transitions`,
 `GET/POST /marketplaces/:id/{milestones|requirements|communications|products}`, `PATCH …/:childId`,
 `GET/POST /products`, `GET/PATCH /products/:id`, `POST /products/:id/collections`,
 `GET/POST /products/:id/source-links`, `PATCH …/:linkId`, `GET/POST /collections`, `PATCH /collections/:id`,
