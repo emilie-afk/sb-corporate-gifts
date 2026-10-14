@@ -2,6 +2,16 @@
 
 Every save asks for **Your name** — a self-reported signature. The shared Google login only controls access.
 
+## Adding marketplaces in bulk
+
+1. **Marketplaces → Add in bulk.** Paste the names, one per line (a spreadsheet column works; bullets and
+   numbers are removed). Choose the provider type for all of them.
+2. **Next: choose statuses.** Tick one status per name (default Prospect), or tick a column heading to set it for
+   everyone. Change the type per name if needed. Names that already exist or are repeated are flagged —
+   **Remove them** before saving.
+3. Enter your name and **Add**. Each record gets the default setup milestones; add contacts and details later
+   from the record. On hold / Rejected / Not qualified / Inactive need a reason, so set those afterwards.
+
 ## Pricing
 
 1. **Pricing → Add pricing record.** Pick the channel and the gift/variant.

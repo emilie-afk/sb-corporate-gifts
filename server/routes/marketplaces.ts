@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { Router, updateVersioned } from "../router";
 import { query, one, tx } from "../db";
-import { audit } from "../audit";
+import type pg from "pg";
+import { audit, type Actor } from "../audit";
 import { badRequest, conflict, notFound } from "../http";
 import { parse, text, reqText, url, email, date, version, assertUuid, defined } from "../validate";
 import { DEFAULT_MILESTONES } from "../../db/seed/providers";
@@ -74,26 +75,46 @@ export function marketplaceRoutes(r: Router) {
       b,
     );
     if (isInactive(d.status)) throw badRequest("Create the record with a working status, then change status with a reason.");
-    const created = await tx(async (c) => {
-      const ch = await c.query("insert into channels (name, type) values ($1,$2) returning id", [
-        d.name, d.provider_type === "marketplace" ? "marketplace" : "sourcing",
-      ]);
-      const m = await c.query(
-        `insert into marketplaces (channel_id, name, provider_type, status, contact_name, contact_email, website_url, portal_url, description, priority_note, initial_action)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning *`,
-        [ch.rows[0].id, d.name, d.provider_type, d.status, d.contact_name ?? null, d.contact_email ?? null, d.website_url ?? null,
-          d.portal_url ?? null, d.description ?? null, d.priority_note ?? null, d.initial_action ?? null],
-      );
-      const mid = m.rows[0].id;
-      for (const [i, t] of DEFAULT_MILESTONES.entries()) {
-        await c.query("insert into setup_milestones (marketplace_id, title, sort_order, is_default) values ($1,$2,$3,true)", [mid, t, (i + 1) * 10]);
-      }
-      await c.query("insert into status_history (marketplace_id, from_status, to_status, reason, signer_name, auth_subject) values ($1,null,$2,'Created',$3,$4)",
-        [mid, d.status, a.signer, a.sub]);
-      await audit(c, a, { entityType: "marketplace", entityId: mid, marketplaceId: mid, action: "create", after: m.rows[0] });
-      return m.rows[0];
-    });
+    const created = await tx((c) => createMarketplace(c, d, a));
     return { marketplace: created };
+  });
+
+  /**
+   * Add several marketplaces at once: names + provider type + a working status per name.
+   * dry_run: true only checks (duplicates in the list, names already in use). Saving is all-or-nothing.
+   */
+  r.post("/marketplaces/bulk", async ({ body, actor }) => {
+    const b = await body();
+    const a = actor(b);
+    const d = parse(z.object({
+      dry_run: z.boolean().default(false),
+      items: z.array(z.object({
+        name: reqText(120),
+        provider_type: z.enum(["marketplace", "supplier_opportunity"]).default("marketplace"),
+        status: z.enum(STATUSES).default("prospect"),
+      })).min(1, "Add at least one name").max(200, "Up to 200 names at a time"),
+    }), b);
+    const key = (n: string) => n.replace(/\s+/g, " ").trim().toLowerCase();
+    const existing = new Map((await query("select name from channels")).map((x) => [key(x.name), x.name]));
+    const seen = new Map<string, number>();
+    const rows = d.items.map((it, i) => {
+      const errors: string[] = [];
+      const k = key(it.name);
+      if (existing.has(k)) errors.push(`Already exists as “${existing.get(k)}”`);
+      if (seen.has(k)) errors.push(`Repeated (same as line ${seen.get(k)! + 1})`);
+      else seen.set(k, i);
+      if (isInactive(it.status)) errors.push("Choose a working status; inactive statuses need a reason and are set later");
+      return { line: i + 1, name: it.name.replace(/\s+/g, " ").trim(), provider_type: it.provider_type, status: it.status, errors };
+    });
+    const invalid = rows.filter((r) => r.errors.length).length;
+    if (d.dry_run) return { rows, invalid };
+    if (invalid) throw badRequest(`${invalid} name(s) can't be added. Fix or remove them and try again.`, { rows });
+    const created = await tx(async (c) => {
+      const out = [];
+      for (const r of rows) out.push(await createMarketplace(c, { name: r.name, provider_type: r.provider_type, status: r.status }, a));
+      return out;
+    });
+    return { created: created.map((m) => ({ id: m.id, name: m.name, status: m.status, provider_type: m.provider_type })) };
   });
 
   r.get("/marketplaces/:id", async ({ params }) => {
@@ -412,4 +433,25 @@ export function marketplaceRoutes(r: Router) {
       return { proposal: after };
     });
   });
+}
+
+/** One new marketplace / supplier opportunity: channel, record, default milestones, first status entry, audit. */
+async function createMarketplace(c: pg.PoolClient, d: any, a: Actor) {
+  const ch = await c.query("insert into channels (name, type) values ($1,$2) returning id", [
+    d.name, d.provider_type === "marketplace" ? "marketplace" : "sourcing",
+  ]);
+  const m = await c.query(
+    `insert into marketplaces (channel_id, name, provider_type, status, contact_name, contact_email, website_url, portal_url, description, priority_note, initial_action)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning *`,
+    [ch.rows[0].id, d.name, d.provider_type, d.status, d.contact_name ?? null, d.contact_email ?? null, d.website_url ?? null,
+      d.portal_url ?? null, d.description ?? null, d.priority_note ?? null, d.initial_action ?? null],
+  );
+  const mid = m.rows[0].id;
+  for (const [i, t] of DEFAULT_MILESTONES.entries()) {
+    await c.query("insert into setup_milestones (marketplace_id, title, sort_order, is_default) values ($1,$2,$3,true)", [mid, t, (i + 1) * 10]);
+  }
+  await c.query("insert into status_history (marketplace_id, from_status, to_status, reason, signer_name, auth_subject) values ($1,null,$2,'Created',$3,$4)",
+    [mid, d.status, a.signer, a.sub]);
+  await audit(c, a, { entityType: "marketplace", entityId: mid, marketplaceId: mid, action: "create", after: m.rows[0] });
+  return m.rows[0];
 }
