@@ -291,13 +291,28 @@ await page.locator("table.dense tbody tr", { hasText: "$245.00" }).first().waitF
 check("recorded fee gives revenue after fees", true);
 await page.screenshot({ path: `${OUT}/11-revenue.png`, fullPage: true });
 
+// ---- Manual
+await page.getByRole("button", { name: "How to use" }).click();
+const man = page.getByRole("dialog", { name: "How to use this site" });
+await man.getByRole("heading", { name: "Quick reference — when this happens, do this" }).waitFor();
+check("manual opens with all steps and the quick reference", (await man.locator(".manual-step").count()) === 12);
+await man.getByRole("button", { name: "6. Agree the price" }).click();
+await page.screenshot({ path: `${OUT}/00-manual.png` });
+await page.getByRole("button", { name: "Close" }).first().click();
+
 // ---- Mobile
 const m = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true });
+
 await m.goto(BASE);
 await m.locator("tbody tr").first().waitFor();
 await m.screenshot({ path: `${OUT}/12-mobile-marketplaces.png`, fullPage: true });
 const overflow = await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
 check("mobile: no horizontal page scroll", !overflow);
+await m.getByRole("button", { name: "How to use" }).click();
+await m.getByRole("heading", { name: "1. Add the partner" }).waitFor();
+check("mobile manual: no horizontal page scroll", !(await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)));
+await m.screenshot({ path: `${OUT}/12b-mobile-manual.png` });
+await m.getByRole("button", { name: "Close" }).first().click();
 await m.getByRole("button", { name: "Snappy" }).count().then(async (n) => n || (await m.getByLabel("Show inactive marketplaces").check()));
 await m.getByRole("button", { name: "Reachdesk" }).click();
 await m.getByRole("dialog").getByText("Requirements").first().waitFor();
