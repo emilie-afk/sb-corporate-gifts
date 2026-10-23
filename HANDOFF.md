@@ -8,6 +8,15 @@ Base: `main` @ `405955c` (v2, deployed 2026-10-12). This change is **not pushed 
 > model, and a replaced immutability trigger covering the new columns. Existing records keep `pricing_model = null`
 > and are not reinterpreted (verified on a copy holding v2-style records). Push only with authorization.
 
+
+## Security hardening (branch `security-hardening`, not pushed / not deployed)
+
+See `docs/SECURITY.md` for the full model, rollout and rollback. In short: real seed data replaced by fictional
+demo data (local only), production builds create no business data, private export/import keeps IDs, durable rate
+limits (migration 005), stricter sessions/CSRF/ID/body checks, masked sheet locations with audited reveal,
+restricted Google/Shopify fetching, redacted errors/logs, formula-safe exports, and a public-output check in every
+Netlify build. Tests: `tests/security.test.ts`.
+
 ## What changed (v3)
 
 **Pricing models** (`shared/pricingModel.ts` — one rule set for the API, the import and the screens)

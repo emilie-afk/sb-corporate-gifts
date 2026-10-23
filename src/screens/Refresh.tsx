@@ -188,7 +188,7 @@ export function SourcesPanel({ onClose }: { onClose: () => void }) {
 
 function SourceForm({ m, onClose, onSaved }: { m: any; onClose: () => void; onSaved: () => void }) {
   const [f, setF] = useState({
-    label: m.label ?? "", spreadsheet: m.spreadsheet_id ?? "", vendor: m.vendor ?? "", tab_name: m.tab_name ?? "", tab_gid: m.tab_gid ?? "",
+    label: m.label ?? "", spreadsheet: "", vendor: m.vendor ?? "", tab_name: m.tab_name ?? "", tab_gid: m.tab_gid ?? "",
     header_row: String(m.header_row ?? 1), last_column: m.last_column ?? "ZZ", match_columns: (m.match_columns ?? []).join(", "),
     cost_column: m.cost_column ?? "", cost_basis: m.cost_basis ?? "", quantity_column: m.quantity_column ?? "", retail_column: m.retail_column ?? "",
     cost_inclusions_note: m.cost_inclusions_note ?? "", active: m.active ?? true,
@@ -200,7 +200,9 @@ function SourceForm({ m, onClose, onSaved }: { m: any; onClose: () => void; onSa
   const set = (k: keyof typeof f) => (v: any) => setF({ ...f, [k]: v?.target ? (v.target.type === "checkbox" ? v.target.checked : v.target.value) : v });
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    const body = { ...f, header_row: Number(f.header_row), match_columns: f.match_columns.split(",").map((x: string) => x.trim()).filter(Boolean), signer_name: signer };
+    const { spreadsheet, ...rest } = f;
+    // Editing: a blank link keeps the saved sheet location (it is never sent to the browser unless revealed).
+    const body = { ...rest, ...(spreadsheet.trim() || !m.id ? { spreadsheet } : {}), header_row: Number(f.header_row), match_columns: f.match_columns.split(",").map((x: string) => x.trim()).filter(Boolean), signer_name: signer };
     const ok = await s.run(() => (m.id ? patch(`/sources/${m.id}`, { ...body, version: m.version }) : post("/sources", body)));
     if (ok) { rememberSigner(signer); onSaved(); }
   };
@@ -210,7 +212,12 @@ function SourceForm({ m, onClose, onSaved }: { m: any; onClose: () => void; onSa
         <ErrorBox error={s.error} />
         <Field label="Label" required error={s.fe("label")}><input value={f.label} onChange={set("label")} /></Field>
         <Field label="Vendor" required error={s.fe("vendor")}><input value={f.vendor} onChange={set("vendor")} /></Field>
-        <Field label="Link to the vendor tab" required wide error={s.fe("spreadsheet")} hint="Open the vendor tab in Google Sheets and copy the browser link — it includes the tab’s gid."><input value={f.spreadsheet} onChange={set("spreadsheet")} /></Field>
+        <Field label={m.id ? "New link to the vendor tab (leave blank to keep)" : "Link to the vendor tab"} required={!m.id} wide error={s.fe("spreadsheet")}
+          hint={m.id
+            ? <>Saved sheet: {m.spreadsheet_ref ?? "—"}. <button type="button" className="btn ghost small" onClick={async () => { const r = await get(`/sources/${m.id}/location`); setF((x) => ({ ...x, spreadsheet: r.link })); }}>Show saved link</button> (visible to signed-in team members; recorded in the audit log)</>
+            : "Open the vendor tab in Google Sheets and copy the browser link — it includes the tab’s gid."}>
+          <input value={f.spreadsheet} onChange={set("spreadsheet")} autoComplete="off" />
+        </Field>
         <Field label="Tab name" required error={s.fe("tab_name")}><input value={f.tab_name} onChange={set("tab_name")} /></Field>
         <Field label="Tab gid" error={s.fe("tab_gid")} hint="Filled from the link automatically if blank (the number after gid=)."><input inputMode="numeric" value={f.tab_gid} onChange={set("tab_gid")} /></Field>
         <Field label="Header row" required error={s.fe("header_row")}><input inputMode="numeric" value={f.header_row} onChange={set("header_row")} /></Field>

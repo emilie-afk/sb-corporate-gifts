@@ -102,7 +102,7 @@ describe("Product Master refresh (fake read-only sheet)", () => {
   });
 
   it("agreed prices keep their cost snapshot after a cost change; failures keep the last cost", async () => {
-    const ch = (await call("GET", "/channels")).body.channels.find((c: any) => c.name === "Goody");
+    const ch = (await call("GET", "/channels")).body.channels.find((c: any) => c.name === "Demo Market Delta");
     const pr = (await call("POST", "/pricing", { ...S, channel_id: ch.id, product_id: gift.id, fulfillment_format: "individual", pricing_model: "fixed_supplier", status: "agreed", supplier_price_cents: 1800, approved_by: "Lead" })).body.record;
     expect(pr.snapshot_cost_cents).toBe(2000);
 
@@ -218,7 +218,7 @@ describe("public Product Master reading", () => {
   });
   it("takes the tab gid from a pasted tab link and requires it for public reads", async () => {
     const { gidFrom } = await import("../server/lib/sheets");
-    expect(gidFrom("https://docs.google.com/spreadsheets/d/abc/edit?gid=1052830815#gid=1052830815")).toBe("1052830815");
+    expect(gidFrom("https://docs.google.com/spreadsheets/d/abc/edit?gid=123456789#gid=123456789")).toBe("123456789");
     const { readSheet } = await import("../server/lib/sheets");
     await expect(readSheet({ spreadsheetId: "x".repeat(30), tabName: "T", gid: null, headerRow: 1, lastColumn: "Z" })).rejects.toThrow(/gid/);
   });

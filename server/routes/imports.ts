@@ -3,6 +3,7 @@ import type pg from "pg";
 import { Router, updateVersioned } from "../router";
 import { query, one, tx, getPool } from "../db";
 import { audit } from "../audit";
+import { redact } from "../redact";
 import { HttpError, badRequest, notFound } from "../http";
 import { parse, text, reqText, version, assertUuid, defined } from "../validate";
 import { fetchCatalogPage, fetchCollectionProductIds, MAX_PAGES, SHOPIFY_ORIGIN, type CatalogItem } from "../lib/shopify";
@@ -122,7 +123,7 @@ export function importRoutes(r: Router) {
       // Partial or failed refresh: nothing is written to products; previous data stays.
       const upd = await getPool().query(
         "update import_runs set status = 'failed', finished_at = now(), errors = errors || $2::jsonb, version = version + 1 where id = $1 returning *",
-        [run.id, JSON.stringify([{ page, message: String(e?.message ?? e) }])],
+        [run.id, JSON.stringify([{ page, message: redact(e?.message ?? e) }])],
       );
       return { run: upd.rows[0] };
     }
@@ -207,7 +208,7 @@ export function importRoutes(r: Router) {
     const m = /^https?:\/\/(?:www\.)?succulentsbox\.com\/collections\/([a-z0-9-]+)\/?$/.exec(String(col.url ?? "").split("?")[0]);
     if (!m) throw badRequest("Membership import only works for succulentsbox.com/collections/<handle> URLs. Link gifts manually instead.");
     let ids: number[];
-    try { ids = await fetchCollectionProductIds(m[1]); } catch (e: any) { throw new HttpError(502, "upstream", `Could not read the collection: ${e.message}. Nothing was changed.`); }
+    try { ids = await fetchCollectionProductIds(m[1]); } catch (e: any) { throw new HttpError(502, "upstream", `Could not read the collection: ${redact(e?.message)}. Nothing was changed.`); }
     return tx(async (c) => {
       const res = await c.query(
         `insert into product_collections (product_id, collection_id)
@@ -237,12 +238,22 @@ export function importRoutes(r: Router) {
     active: z.boolean().optional(),
   });
 
+  // Sheet locations (spreadsheet ID + tab gid) are not sent in ordinary responses. Signed-in team members can
+  // reveal one explicitly to edit it (GET /sources/:id/location), which is recorded in the audit log.
   r.get("/sources", async () => ({
-    sources: await query(
+    sources: (await query(
       `select m.*, (select count(*) from gift_source_links l where l.source_mapping_id = m.id and l.removed_at is null)::int as link_count
        from source_mappings m order by m.vendor, m.label`,
-    ),
+    )).map(maskSource),
   }));
+
+  r.get("/sources/:id/location", async ({ params, session }) => {
+    assertUuid(params.id);
+    const m = await one("select id, spreadsheet_id, tab_gid from source_mappings where id = $1", [params.id]);
+    if (!m) throw notFound("Source mapping");
+    await audit(getPool(), { signer: "(revealed in settings)", sub: session.sub }, { entityType: "source_mapping", entityId: m.id, action: "reveal_location" });
+    return { link: `https://docs.google.com/spreadsheets/d/${m.spreadsheet_id}/edit${m.tab_gid ? `#gid=${m.tab_gid}` : ""}`, tab_gid: m.tab_gid };
+  });
 
   r.post("/sources", async ({ body, actor }) => {
     const b = await body();
@@ -259,8 +270,8 @@ export function importRoutes(r: Router) {
         [d.label, sid, d.vendor, d.tab_name, d.tab_gid ?? null, d.header_row, d.last_column, d.match_columns, d.cost_column, d.cost_basis,
           d.quantity_column ?? null, d.retail_column ?? null, d.cost_inclusions_note ?? null, a.signer],
       );
-      await audit(c, a, { entityType: "source_mapping", entityId: ins.rows[0].id, action: "create", after: ins.rows[0] });
-      return { source: ins.rows[0] };
+      await audit(c, a, { entityType: "source_mapping", entityId: ins.rows[0].id, action: "create", after: maskSource(ins.rows[0]) });
+      return { source: maskSource(ins.rows[0]) };
     });
   });
 
@@ -270,7 +281,7 @@ export function importRoutes(r: Router) {
     assertUuid(params.id);
     const d = normalizeColumns(defined(parse(mappingSchema.partial().extend({ version }), b)) as any);
     const { version: v, spreadsheet, ...fields } = d;
-    if (spreadsheet !== undefined) {
+    if (spreadsheet !== undefined && spreadsheet !== null && spreadsheet !== "") {
       const sid = spreadsheetIdFrom(spreadsheet);
       if (!sid) throw badRequest("Enter a Google Sheets link or spreadsheet ID.", { fields: { spreadsheet: "Not a spreadsheet link/ID" } });
       fields.spreadsheet_id = sid;
@@ -283,8 +294,8 @@ export function importRoutes(r: Router) {
       if (mappingKeys.some((k) => k in fields && JSON.stringify(fields[k]) !== JSON.stringify(cur.rows[0][k]))) fields.mapping_version = cur.rows[0].mapping_version + 1;
       fields.updated_by = a.signer;
       const { before, after } = await updateVersioned(c, "source_mappings", params.id, v, fields);
-      await audit(c, a, { entityType: "source_mapping", entityId: params.id, action: "update", before, after });
-      return { source: after };
+      await audit(c, a, { entityType: "source_mapping", entityId: params.id, action: "update", before: maskSource(before), after: maskSource(after) });
+      return { source: maskSource(after) };
     });
   });
 
@@ -297,7 +308,7 @@ export function importRoutes(r: Router) {
     if (!m) throw notFound("Source mapping");
     let values: unknown[][];
     try { values = await readSheet(tabRef(m)); }
-    catch (e: any) { throw new HttpError(502, "sheet_access", e.message); }
+    catch (e: any) { throw new HttpError(502, "sheet_access", redact(e?.message)); }
     const sheet = parseSheet(values, m.header_row);
     const missing = missingHeaders(m, sheet.headers);
     const cols = [...m.match_columns, m.cost_column, m.quantity_column, m.retail_column].filter(Boolean).map(normCol);
@@ -382,7 +393,7 @@ export function importRoutes(r: Router) {
         if (missing.length) { sheetErrors.push({ mapping: m.label, message: `Missing columns: ${missing.join(", ")}` }); sheets.set(m.id, null); }
         else sheets.set(m.id, sheet);
       } catch (e: any) {
-        sheetErrors.push({ mapping: m.label, message: String(e?.message ?? e) });
+        sheetErrors.push({ mapping: m.label, message: redact(e?.message ?? e) });
         sheets.set(m.id, null);
       }
     }
@@ -465,4 +476,11 @@ function stable(v: any): string {
   if (Array.isArray(v)) return `[${v.map(stable).join(",")}]`;
   if (v && typeof v === "object") return `{${Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + stable(v[k])).join(",")}}`;
   return JSON.stringify(v);
+}
+
+/** A source mapping without its sheet location: only the last 4 characters identify which sheet it is. */
+export function maskSource(m: any) {
+  if (!m) return m;
+  const { spreadsheet_id, ...rest } = m;
+  return { ...rest, spreadsheet_ref: spreadsheet_id ? `…${String(spreadsheet_id).slice(-4)}` : null };
 }

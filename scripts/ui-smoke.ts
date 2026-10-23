@@ -30,7 +30,7 @@ check("default list shows 8 working providers", rows === 8, `${rows} rows`);
 await page.screenshot({ path: `${OUT}/01-marketplaces-desktop.png`, fullPage: true });
 
 // ---- Detail panel + milestone done
-await page.getByRole("button", { name: "Reachdesk" }).click();
+await page.getByRole("button", { name: "Demo Market Alpha" }).click();
 await page.getByRole("dialog").getByText("Setup checklist").waitFor();
 await page.getByRole("button", { name: "Mark done" }).first().click();
 await sign(page);
@@ -51,7 +51,7 @@ await page.getByRole("dialog", { name: "Mark not applicable" }).getByRole("butto
 
 // ---- Communication note
 await page.getByRole("button", { name: "Add communication" }).click();
-await page.getByLabel("Summary").fill("Example only (screenshot): emailed former contact about reactivating the vendor account.");
+await page.getByLabel("Summary").fill("Example only (screenshot): emailed the demo contact about a vendor account.");
 await sign(page);
 await page.getByRole("dialog", { name: "Add communication" }).getByRole("button", { name: "Save" }).click();
 await page.getByText("Example only (screenshot)").waitFor();
@@ -59,7 +59,7 @@ check("communication saved and listed", true);
 await page.getByRole("button", { name: "Close" }).first().click();
 
 // ---- Status change to On hold → hidden, toggle shows muted
-await page.getByRole("button", { name: "Snappy" }).click();
+await page.getByRole("button", { name: "Demo Market Echo" }).click();
 await page.getByRole("button", { name: "Change status" }).click();
 await page.getByLabel("New status").selectOption("on_hold");
 await sign(page);
@@ -72,21 +72,21 @@ await page.getByRole("dialog", { name: "Change status" }).getByRole("button", { 
 await page.getByRole("dialog").getByText("Reactivate").waitFor();
 await page.getByRole("button", { name: "Close" }).first().click();
 await page.waitForTimeout(300);
-check("on-hold provider hidden from default list", (await page.locator("tbody tr", { hasText: "Snappy" }).count()) === 0);
+check("on-hold provider hidden from default list", (await page.locator("tbody tr", { hasText: "Demo Market Echo" }).count()) === 0);
 await page.getByLabel("Show inactive marketplaces").check();
-await page.locator("tr.muted-row", { hasText: "Snappy" }).waitFor();
+await page.locator("tr.muted-row", { hasText: "Demo Market Echo" }).waitFor();
 check("toggle shows muted readable row with status label", (await page.locator("tr.muted-row", { hasText: "On hold" }).count()) === 1);
 await page.screenshot({ path: `${OUT}/03-marketplaces-with-inactive.png`, fullPage: true });
 
 // ---- Add marketplaces in bulk: names first, then tick a status per name
 await page.getByRole("button", { name: "Add in bulk" }).click();
 const bk = page.getByRole("dialog", { name: "Add marketplaces in bulk" });
-await bk.getByLabel("Names").fill("1. Example Gifting One\n- Example Gifting Two\nGoody\n\nExample Supplier Three");
+await bk.getByLabel("Names").fill("1. Example Gifting One\n- Example Gifting Two\nDemo Market Delta\n\nExample Supplier Three");
 check("bulk step 1 counts the pasted names (bullets/numbers removed)", (await bk.getByText("4 names").count()) === 1);
 await page.screenshot({ path: `${OUT}/03b-bulk-add-names.png` });
 await bk.getByRole("button", { name: "Next: choose statuses" }).click();
 await bk.getByText("Step 2 of 2").waitFor();
-check("bulk step 2 flags a name that already exists", (await bk.getByText(/Already exists as “Goody”/).count()) === 1);
+check("bulk step 2 flags a name that already exists", (await bk.getByText(/Already exists as “Demo Market Delta”/).count()) === 1);
 await bk.getByRole("button", { name: "Remove them" }).click();
 await bk.getByRole("checkbox", { name: "Example Gifting Two: In discussion" }).check();
 await bk.getByRole("checkbox", { name: "Example Supplier Three: Live" }).check();
@@ -118,7 +118,7 @@ await page.getByRole("button", { name: "Close" }).first().click();
 
 // ---- Inside a marketplace: propose several gifts by category, add several requirements
 await page.getByRole("tab", { name: "Marketplaces" }).click();
-await page.getByRole("button", { name: "Reachdesk" }).click();
+await page.getByRole("button", { name: "Demo Market Alpha" }).click();
 const det = page.getByRole("dialog").filter({ hasText: "Setup checklist" });
 await det.getByRole("button", { name: "Propose several" }).click();
 const bp = page.getByRole("dialog", { name: "Propose several products" });
@@ -158,10 +158,10 @@ await retailBox.getByText("From source").waitFor();
 check("retail reference prefilled from the website (no retyping)", (await retailBox.innerText()).includes("$32.63"));
 check("unknown cost shown as Unknown, not $0", (await pf.locator(".ref-box", { hasText: "Internal gift cost" }).innerText()).includes("Unknown"));
 await pf.getByLabel("Fulfillment format").selectOption("corporate_separate_addresses");
-check("direct discount prefilled from channel default", (await pf.getByLabel("Customer discount %").inputValue()) === "20");
+check("direct discount prefilled from channel default", (await pf.getByLabel("Customer discount %").inputValue()) === "15");
 await pf.getByText("Suggested customer price").waitFor();
 const calc = await pf.locator(".calc").first().innerText();
-check("direct suggested price = retail × (1 − 20%)", calc.includes("$26.10"), calc.split("\n")[0]);
+check("direct suggested price = retail × (1 − demo 15%)", calc.includes("$27.74"), calc.split("\n")[0]);
 await pf.getByRole("button", { name: /More details/ }).click();
 check("optional fields live under More details", await pf.getByLabel("Payment terms").isVisible());
 await sign(page);
@@ -175,7 +175,7 @@ check("suggested price not stored as agreed", agreedCell.trim().startsWith("—"
 // manual cost override needs reason + source + date
 await page.getByRole("button", { name: "Add pricing record" }).click();
 const pm = page.getByRole("dialog", { name: "Add pricing record" });
-await pm.getByLabel("Channel").selectOption({ label: "Goody" });
+await pm.getByLabel("Channel").selectOption({ label: "Demo Market Delta" });
 await pm.getByPlaceholder("Search gifts by name, variant or SKU").fill("Thank You Gift Box");
 await pm.getByRole("button", { name: /Thank You Gift Box — Simple/ }).click();
 // pricing models: only the chosen model's fields; live "SB receives"
@@ -202,8 +202,8 @@ check("manual value without reason is refused, input kept", (await pm.getByLabel
 await pm.locator(".ref-box", { hasText: "Internal gift cost" }).getByLabel("Reason").fill("Example only: vendor quote pending Product Master mapping");
 await pm.locator(".ref-box", { hasText: "Internal gift cost" }).getByLabel("Source").fill("Example quote Q-SCREENSHOT");
 await pm.getByRole("button", { name: "Save" }).click();
-await page.locator("tbody tr", { hasText: "Goody" }).first().waitFor();
-await page.locator("tbody tr", { hasText: "Goody" }).first().getByRole("button", { name: "Open" }).click();
+await page.locator("tbody tr", { hasText: "Demo Market Delta" }).first().waitFor();
+await page.locator("tbody tr", { hasText: "Demo Market Delta" }).first().getByRole("button", { name: "Open" }).click();
 await page.getByRole("dialog").getByText("Manual", { exact: true }).waitFor();
 check("manual value labelled Manual in the price view", true);
 await page.screenshot({ path: `${OUT}/06-pricing-view-sources.png` });
@@ -213,7 +213,7 @@ await page.screenshot({ path: `${OUT}/07-pricing-table.png`, fullPage: true });
 // ---- Pots + succulents: individual formats not offered
 await page.getByRole("button", { name: "Add pricing record" }).click();
 const pf2 = page.getByRole("dialog", { name: "Add pricing record" });
-await pf2.getByLabel("Channel").selectOption({ label: "CorporateGift.com" });
+await pf2.getByLabel("Channel").selectOption({ label: "Demo Market Charlie" });
 await pf2.getByPlaceholder("Search gifts by name, variant or SKU").fill("With Succulent");
 await pf2.getByRole("button", { name: /10-Pack \/ With Succulent/ }).click();
 await pf2.getByText("Pots with succulents: complete gift, bulk orders only").waitFor();
@@ -231,7 +231,7 @@ await xi.locator('input[type="file"]').setInputFiles(csvPath);
 await xi.getByText("What each column means").waitFor();
 check("column suggestion: Wholesale price → agreed supplier price", (await xi.getByLabel("Meaning of Wholesale price").inputValue()) === "supplier_price");
 check("a bare “Price” column is never assumed to be what SB earns", (await xi.getByLabel("Meaning of Price", { exact: true }).inputValue()) === "" && (await xi.getByText(/doesn't say whose price it is/).count()) === 1);
-await xi.getByRole("combobox", { name: /^Channel/ }).selectOption({ label: "Reachdesk" });
+await xi.getByRole("combobox", { name: /^Channel/ }).selectOption({ label: "Demo Market Alpha" });
 await xi.getByRole("combobox", { name: /^Pricing model(?! for)/ }).selectOption("fixed_supplier");
 await xi.getByRole("combobox", { name: /^Fulfillment format/ }).selectOption("individual");
 await xi.getByRole("button", { name: "Apply and re-check rows" }).click();
@@ -263,24 +263,24 @@ await up.getByRole("button", { name: "Close" }).last().click();
 await page.getByRole("button", { name: /Shopify matching rules/ }).click();
 await page.getByRole("button", { name: "Add rule" }).click();
 const rf = page.getByRole("dialog", { name: "Add matching rule" });
-await rf.getByLabel("Channel").selectOption({ label: "Postal.io / Postal" });
+await rf.getByLabel("Channel").selectOption({ label: "Demo Market Bravo" });
 await rf.getByLabel("Source field").selectOption("billing_company");
-await rf.getByLabel("Match value").fill("  postal.IO ");
+await rf.getByLabel("Match value").fill("  bravo GIFTING llc ");
 await rf.getByRole("button", { name: "Preview impact" }).click();
 await rf.getByText("orders change channel/state").waitFor();
 check("rule preview shows matching count before saving", (await rf.locator(".stats").innerText()).includes("1 orders match"));
 await page.screenshot({ path: `${OUT}/10-rule-preview.png` });
 await sign(page);
 await rf.getByRole("button", { name: "Confirm and apply" }).click();
-await page.locator("tbody tr", { hasText: "Postal.io / Postal" }).first().waitFor();
-const postalRow = await page.locator("table.dense tbody tr", { hasText: "Postal.io / Postal" }).first().innerText();
-check("assigned Shopify order appears in Postal revenue ($280.00, tax/Route/discount handled)", postalRow.includes("$280.00"), postalRow.replace(/\s+/g, " "));
-check("fees shown as not recorded when unknown", postalRow.includes("Fees not recorded"));
+await page.locator("tbody tr", { hasText: "Demo Market Bravo" }).first().waitFor();
+const bravoRow = await page.locator("table.dense tbody tr", { hasText: "Demo Market Bravo" }).first().innerText();
+check("assigned Shopify order appears in Bravo revenue ($280.00, tax/Route/discount handled)", bravoRow.includes("$280.00"), bravoRow.replace(/\s+/g, " "));
+check("fees shown as not recorded when unknown", bravoRow.includes("Fees not recorded"));
 
 await page.getByRole("button", { name: "Add manual entry" }).click();
 const me = page.getByRole("dialog", { name: "Add manual entry" });
 await me.getByLabel("Kind").selectOption("fee");
-await me.getByLabel("Channel").selectOption({ label: "Postal.io / Postal" });
+await me.getByLabel("Channel").selectOption({ label: "Demo Market Bravo" });
 await me.getByLabel("Reporting month").fill("2026-09");
 await me.getByLabel("Marketplace fees (USD)").fill("35.00");
 await me.getByLabel("Reference").fill("EXAMPLE-STATEMENT-1");
@@ -313,8 +313,8 @@ await m.getByRole("heading", { name: "1. Add the partner" }).waitFor();
 check("mobile manual: no horizontal page scroll", !(await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)));
 await m.screenshot({ path: `${OUT}/12b-mobile-manual.png` });
 await m.getByRole("button", { name: "Close" }).first().click();
-await m.getByRole("button", { name: "Snappy" }).count().then(async (n) => n || (await m.getByLabel("Show inactive marketplaces").check()));
-await m.getByRole("button", { name: "Reachdesk" }).click();
+await m.getByRole("button", { name: "Demo Market Echo" }).count().then(async (n) => n || (await m.getByLabel("Show inactive marketplaces").check()));
+await m.getByRole("button", { name: "Demo Market Alpha" }).click();
 await m.getByRole("dialog").getByText("Requirements").first().waitFor();
 await m.screenshot({ path: `${OUT}/12b-mobile-detail.png`, fullPage: false });
 await m.goto(`${BASE}/?tab=pricing`);

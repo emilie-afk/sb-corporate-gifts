@@ -23,7 +23,7 @@ const STEPS: Step[] = [
         <ul>
           <li><strong>One partner:</strong> <em>Add marketplace</em> — name, provider type, starting status, contact, website, vendor portal, priority, the first action to take and a short description.</li>
           <li><strong>A list of partners:</strong> <em>Add in bulk</em> — paste the names (one per line), choose the type, then tick each one's status in the table. Names already in the site are flagged; remove them before saving.</li>
-          <li><strong>Provider type:</strong> <em>Marketplace</em> = a platform that sells our gifts (Goody, Reachdesk…). <em>Potential supplier opportunity</em> = a company we could supply for its own gifting projects.</li>
+          <li><strong>Provider type:</strong> <em>Marketplace</em> = a platform that sells our gifts (Demo Market Delta, Demo Market Alpha…). <em>Potential supplier opportunity</em> = a company we could supply for its own gifting projects.</li>
         </ul>
         <p className="hint">Every new partner gets the 6-step setup checklist automatically. Add contact details later from the record (<em>Edit details</em>).</p>
       </>

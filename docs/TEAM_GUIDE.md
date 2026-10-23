@@ -41,7 +41,7 @@ Every save asks for **Your name** — a self-reported signature. The shared Goog
 4. Also enter customer shipping charge, status and effective dates. Everything else is under **More details**.
 5. If a retail price or cost is missing or wrong, tick **Enter a manual value instead** and give the amount,
    reason, source and date. It is shown as **Manual**. Blank always means unknown — never $0.
-6. **Direct website** shows a *suggested* price = retail × (1 − 20%). It is only stored if you save it as the
+6. **Direct website** shows a *suggested* price = retail × (1 − the Direct website default discount set in its terms). It is only stored if you save it as the
    agreed customer price, and it never affects marketplace prices.
 7. Agreed/active prices can't be edited. Use **Revise price** for a new dated version; the old one and its
    snapshot (retail, cost, terms at the time) stay in **View price history**.

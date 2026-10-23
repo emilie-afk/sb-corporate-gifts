@@ -1,13 +1,14 @@
 [build]
-  command = "npm run build"
+  command = "npm run build && npm run check:public"
   publish = "dist"
   functions = "netlify/functions"
 
-# Production builds apply pending migrations + initial data to the Neon database first.
-# A failure stops the deploy, so the live site never runs against an unmigrated schema.
-# Deploy previews / branch deploys only build (they never touch the production database).
+# Production builds: build, check the public output for secrets/private data, then apply pending migrations to
+# the Neon database (no business data is created). Any failure stops the deploy, so the live site never runs
+# against an unmigrated schema or with a leaking bundle.
+# Deploy previews / branch deploys only build and check (they never touch the production database).
 [context.production]
-  command = "npm run db:migrate && npm run build"
+  command = "npm run build && npm run check:public && npm run db:migrate"
 
 [functions]
   node_bundler = "esbuild"

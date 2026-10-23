@@ -53,7 +53,7 @@ describe("shared pricing-model rules", () => {
 
 describe("pricing API by model", () => {
   it("fixed supplier price: agreed price = supplier price; commission refused; typed agreed price refused", async () => {
-    const base = { ...S, channel_id: ch["Goody"].id, product_id: gA.id, fulfillment_format: "individual", pricing_model: "fixed_supplier" };
+    const base = { ...S, channel_id: ch["Demo Market Delta"].id, product_id: gA.id, fulfillment_format: "individual", pricing_model: "fixed_supplier" };
     const withFee = await call("POST", "/pricing", { ...base, supplier_price_cents: 2400, commission_pct: 15 });
     expect(withFee.status).toBe(400);
     expect(withFee.body.error.details.fields.commission_pct).toMatch(/no commission or fee is deducted/);
@@ -68,7 +68,7 @@ describe("pricing API by model", () => {
   });
 
   it("commission-based: commission optional for drafts (blank stays null), required to agree", async () => {
-    const base = { ...S, channel_id: ch["Reachdesk"].id, product_id: gA.id, fulfillment_format: "individual", pricing_model: "commission" };
+    const base = { ...S, channel_id: ch["Demo Market Alpha"].id, product_id: gA.id, fulfillment_format: "individual", pricing_model: "commission" };
     const draft = (await call("POST", "/pricing", { ...base, selling_price_cents: 4000 })).body.record;
     expect(draft).toMatchObject({ commission_pct: null, fixed_fee_cents: null, agreed_price_cents: 4000 });
     const noComm = await call("PATCH", `/pricing/${draft.id}`, { ...S, status: "agreed", approved_by: "Lead", commission_basis: "selling_price", version: draft.version });
@@ -78,26 +78,26 @@ describe("pricing API by model", () => {
     expect(agreed.status).toBe(200);
     expect(agreed.body.record).toMatchObject({ agreed_price_cents: 4000, commission_basis: "selling_price" });
     expect(Number(agreed.body.record.commission_pct)).toBe(15);
-    const basisOther = await call("POST", "/pricing", { ...base, channel_id: ch["Snappy"].id, selling_price_cents: 4000, commission_basis: "other" });
+    const basisOther = await call("POST", "/pricing", { ...base, channel_id: ch["Demo Market Echo"].id, selling_price_cents: 4000, commission_basis: "other" });
     expect(basisOther.body.error.details.fields).toHaveProperty("commission_basis_note");
   });
 
   it("other / custom terms: agreed price + explained terms; direct model only on the direct website", async () => {
-    const base = { ...S, channel_id: ch["Loop & Tie"].id, product_id: gA.id, fulfillment_format: "bulk_one_location", pricing_model: "custom" };
+    const base = { ...S, channel_id: ch["Demo Market Foxtrot"].id, product_id: gA.id, fulfillment_format: "bulk_one_location", pricing_model: "custom" };
     expect((await call("POST", "/pricing", { ...base, status: "agreed", agreed_price_cents: 3100, approved_by: "Lead" })).body.error.details.fields).toHaveProperty("custom_terms");
     const ok = await call("POST", "/pricing", { ...base, status: "agreed", agreed_price_cents: 3100, approved_by: "Lead", custom_terms: "Price includes a 5% year-end rebate paid by SB", commission_pct: 5 });
     expect(ok.status).toBe(200);
-    const wrongDirect = await call("POST", "/pricing", { ...S, channel_id: ch["Goody"].id, product_id: gB.id, fulfillment_format: "individual", pricing_model: "direct" });
+    const wrongDirect = await call("POST", "/pricing", { ...S, channel_id: ch["Demo Market Delta"].id, product_id: gB.id, fulfillment_format: "individual", pricing_model: "direct" });
     expect(wrongDirect.body.error.details.fields.pricing_model).toMatch(/only for the direct website/);
     const wrongMarket = await call("POST", "/pricing", { ...S, channel_id: ch["Direct website"].id, product_id: gB.id, fulfillment_format: "individual", pricing_model: "fixed_supplier" });
     expect(wrongMarket.body.error.details.fields.pricing_model).toMatch(/Direct sale/);
-    expect((await call("POST", "/pricing", { ...S, channel_id: ch["Goody"].id, product_id: gB.id, fulfillment_format: "individual" })).body.error.details.fields.pricing_model).toBeTruthy();
+    expect((await call("POST", "/pricing", { ...S, channel_id: ch["Demo Market Delta"].id, product_id: gB.id, fulfillment_format: "individual" })).body.error.details.fields.pricing_model).toBeTruthy();
   });
 
   it("older records without a model stay readable; revising one requires choosing a model", async () => {
     const legacy = (await getPool().query(
       `insert into pricing_records (channel_id, product_id, status, agreed_price_cents, fulfillment_format, entered_by, approved_by, approved_at)
-       values ($1, $2, 'agreed', 2500, 'individual', 'Old entry', 'Lead', now()) returning *`, [ch["Snappy"].id, gC.id])).rows[0];
+       values ($1, $2, 'agreed', 2500, 'individual', 'Old entry', 'Lead', now()) returning *`, [ch["Demo Market Echo"].id, gC.id])).rows[0];
     const r = (await call("GET", `/pricing/${legacy.id}`)).body.record;
     expect(r).toMatchObject({ pricing_model: null, agreed_price_cents: 2500 });
     expect((await call("POST", `/pricing/${legacy.id}/revisions`, { ...S })).status).toBe(400);
@@ -119,7 +119,7 @@ describe("pricing file import — any layout, .xlsx or .csv", () => {
     expect(r.body.notes.join(" ")).toMatch(/“MSRP”, “Price”/);
     expect(r.body.missing.join()).toMatch(/channel/); // the file has no channel column
     const re = await call("POST", `/pricing-import/${r.body.batch_id}/preview`, { ...S,
-      settings: { channel_id: ch["Goody"].id, pricing_model: "fixed_supplier", fulfillment_format: "individual" } });
+      settings: { channel_id: ch["Demo Market Delta"].id, pricing_model: "fixed_supplier", fulfillment_format: "individual" } });
     expect(re.body.missing).toEqual([]);
     const rows = byRef(re.body.rows);
     expect(rows["row 2"]).toMatchObject({ valid: true, action: "no_change", model: "fixed_supplier", model_source: "file" }); // same as the agreed API price
@@ -127,7 +127,7 @@ describe("pricing file import — any layout, .xlsx or .csv", () => {
     expect(rows["row 3"].product.sku).toBe("MOD-B"); // exact SKU, case-insensitive
     const cf = await call("POST", `/pricing-import/${r.body.batch_id}/confirm`, { ...S, selected: ["row 2", "row 3"], version: re.body.version });
     expect(cf.body.summary.results).toMatchObject({ create: 1, no_change: 1 });
-    const recs = (await call("GET", `/pricing?channel_id=${ch["Goody"].id}&product_id=${gB.id}`)).body.pricing;
+    const recs = (await call("GET", `/pricing?channel_id=${ch["Demo Market Delta"].id}&product_id=${gB.id}`)).body.pricing;
     expect(recs[0]).toMatchObject({ pricing_model: "fixed_supplier", supplier_price_cents: 2600, commission_pct: null, status: "draft" });
   });
 
@@ -137,7 +137,7 @@ describe("pricing file import — any layout, .xlsx or .csv", () => {
     expect(r.body.suggested).toMatchObject({ variant_id: "Variant ID", selling_price: "Selling price", commission_pct: "Commission %", status: "Status" });
     const re = await call("POST", `/pricing-import/${r.body.batch_id}/preview`, { ...S,
       mapping: { ...r.body.mapping, fixed_fee: "Fee" },
-      settings: { channel_id: ch["Snappy"].id, pricing_model: "commission", commission_basis: "selling_price", fulfillment_format: "bulk_one_location" } });
+      settings: { channel_id: ch["Demo Market Echo"].id, pricing_model: "commission", commission_basis: "selling_price", fulfillment_format: "bulk_one_location" } });
     const rows = byRef(re.body.rows);
     expect(rows["row 2"]).toMatchObject({ valid: true });
     expect(rows["row 2"].interpretation).toMatchObject({ sbReceivesCents: 3825, basisLabel: "Marketplace selling price" });
@@ -151,7 +151,7 @@ describe("pricing file import — any layout, .xlsx or .csv", () => {
   it("per-row model overrides; fixed rows with a commission are rejected instead of deducted twice", async () => {
     const r = await call("POST", "/pricing-import/preview", { ...S, ...csv(
       "SKU,Net price,Selling price,Commission %,Terms\nMOD-A,22,,,\nMOD-B,,48,12,\nMOD-C,30,,10,\n", "mixed.csv") });
-    const settings = { channel_id: ch["Packed with Purpose"].id, pricing_model: "fixed_supplier", fulfillment_format: "bulk_multiple_shipments" };
+    const settings = { channel_id: ch["Demo Supplier Hotel"].id, pricing_model: "fixed_supplier", fulfillment_format: "bulk_multiple_shipments" };
     let re = await call("POST", `/pricing-import/${r.body.batch_id}/preview`, { ...S, settings });
     expect(re.body.suggested).toMatchObject({ supplier_price: "Net price", selling_price: "Selling price", commission_pct: "Commission %", custom_terms: "Terms" });
     let rows = byRef(re.body.rows);
@@ -181,7 +181,7 @@ describe("pricing file import — any layout, .xlsx or .csv", () => {
     expect(r.body.sheet).toBe("Summary");
     expect(r.body.sheet_error).toMatch(/Formulas are not accepted/);
     const re = await call("POST", `/pricing-import/${r.body.batch_id}/preview`, { ...S, sheet: "Q4 price list",
-      settings: { channel_id: ch["Loop & Tie"].id, pricing_model: "commission", commission_basis: "selling_price", fulfillment_format: "bulk_one_location" } });
+      settings: { channel_id: ch["Demo Market Foxtrot"].id, pricing_model: "commission", commission_basis: "selling_price", fulfillment_format: "bulk_one_location" } });
     expect(re.body).toMatchObject({ sheet: "Q4 price list", header_row: 3, sheet_error: null });
     expect(re.body.suggested).toMatchObject({ sku: "Item SKU", gift_name: "Item name", selling_price: "Sale price", commission_pct: "Take rate" });
     const row = re.body.rows[0];
@@ -197,11 +197,11 @@ describe("pricing file import — any layout, .xlsx or .csv", () => {
   });
 
   it("switching an existing draft to a fixed supplier price clears its commission instead of deducting it", async () => {
-    const d = (await call("POST", "/pricing", { ...S, channel_id: ch["Goody"].id, product_id: gC.id, fulfillment_format: "bulk_one_location",
+    const d = (await call("POST", "/pricing", { ...S, channel_id: ch["Demo Market Delta"].id, product_id: gC.id, fulfillment_format: "bulk_one_location",
       pricing_model: "commission", selling_price_cents: 6000, commission_pct: 20, commission_basis: "selling_price" })).body.record;
     const r = await call("POST", "/pricing-import/preview", { ...S, ...csv("SKU,Vendor price\nMOD-C,41\n", "switch.csv") });
     const re = await call("POST", `/pricing-import/${r.body.batch_id}/preview`, { ...S,
-      settings: { channel_id: ch["Goody"].id, pricing_model: "fixed_supplier", fulfillment_format: "bulk_one_location" } });
+      settings: { channel_id: ch["Demo Market Delta"].id, pricing_model: "fixed_supplier", fulfillment_format: "bulk_one_location" } });
     const row = re.body.rows[0];
     expect(row).toMatchObject({ valid: true, action: "update_draft" });
     expect(row.changes.map((c: any) => c.field)).toEqual(expect.arrayContaining(["Pricing model", "Agreed supplier price", "Commission %", "Commission basis"]));
@@ -215,7 +215,7 @@ describe("pricing file import — any layout, .xlsx or .csv", () => {
     const file = csv("Item SKU,Sale price,Take rate\nMOD-C,50,12\n", "again.csv");
     const r = await call("POST", "/pricing-import/preview", { ...S, ...file });
     const re = await call("POST", `/pricing-import/${r.body.batch_id}/preview`, { ...S,
-      settings: { channel_id: ch["Loop & Tie"].id, pricing_model: "commission", commission_basis: "selling_price", fulfillment_format: "bulk_one_location" } });
+      settings: { channel_id: ch["Demo Market Foxtrot"].id, pricing_model: "commission", commission_basis: "selling_price", fulfillment_format: "bulk_one_location" } });
     expect(re.body.rows[0]).toMatchObject({ valid: true, action: "no_change" });
   });
 });

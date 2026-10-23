@@ -1,3 +1,5 @@
+import { logServerError } from "./redact";
+
 export class HttpError extends Error {
   constructor(public status: number, public code: string, message: string, public details?: unknown) {
     super(message);
@@ -12,12 +14,15 @@ export const conflict = (msg = "This record was changed by someone else. Reload 
 export function json(data: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers },
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store, private", "x-content-type-options": "nosniff", ...headers },
   });
 }
 
 export function errorResponse(e: unknown): Response {
-  if (e instanceof HttpError) return json({ error: { code: e.code, message: e.message, details: e.details } }, e.status);
+  if (e instanceof HttpError) {
+    const retry = (e as any).retryAfter;
+    return json({ error: { code: e.code, message: e.message, details: e.details } }, e.status, retry ? { "retry-after": String(retry) } : {});
+  }
   const pg = e as { code?: string; constraint?: string; message?: string };
   if (pg?.code === "23505") {
     return json({ error: { code: "duplicate", message: duplicateMessage(pg.constraint) } }, 409);
@@ -28,7 +33,7 @@ export function errorResponse(e: unknown): Response {
   if (pg?.code === "23514" || pg?.code === "23503" || pg?.code === "22P02" || pg?.code === "22007" || pg?.code === "22008") {
     return json({ error: { code: "constraint", message: constraintMessage(pg.message ?? "") } }, 422);
   }
-  console.error(e);
+  logServerError("api", e); // no stack, SQL parameters, row values or URLs
   return json({ error: { code: "server_error", message: "Something went wrong on the server. Your input was not saved." } }, 500);
 }
 

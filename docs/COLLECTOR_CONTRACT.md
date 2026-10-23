@@ -14,7 +14,7 @@ Worker. That sanitization (`shared/adapters/shopifyCsv.js`, `shopifyPrivacy.js`)
 - **Source** must be on an approved list of channel/app ids, otherwise the export is refused.
 - **Billing company**, names, emails, addresses, phones, notes and discount codes are dropped.
 
-So the GP upload cannot identify Postal/Reachdesk-style corporate orders, and widening it would change the GP
+So the GP upload cannot identify partner-style corporate orders, and widening it would change the GP
 data contract. Instead, the collector would build a **second, minimal payload** from the same in-memory raw
 export, before the raw bytes are zeroed, and send it here. No second Shopify download, browser, schedule or
 Shopify app.
@@ -54,8 +54,8 @@ Content-Type: application/json
     "cancelledAt": null, "financialStatus": "paid", "currency": "USD",
     "subtotal": "282.00", "shipping": "0.00", "taxes": "22.40", "duties": null, "total": "304.40",
     "discountAmount": "20.00", "refundedAmount": "0.00",
-    "source": "web", "tags": ["Corporate", "postal"], "billingCompany": "Postal.io",
-    "lines": [{ "sku": "LTG-THANKS-S", "name": "Live to Give Thank You Box - Simple", "quantity": 10, "price": "30.00", "discount": "20.00" }]
+    "source": "web", "tags": ["Corporate", "bravo"], "billingCompany": "Bravo Gifting LLC",
+    "lines": [{ "sku": "SYN-THANKS-S", "name": "Live to Give Thank You Box - Simple", "quantity": 10, "price": "30.00", "discount": "20.00" }]
   }]
 }
 ```

@@ -9,6 +9,10 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "db:migrate": "tsx scripts/migrate.ts",
+    "db:demo": "SEED_DEMO_DATA=1 tsx scripts/migrate.ts",
+    "private:export": "tsx scripts/private-data.ts export",
+    "private:import": "tsx scripts/private-data.ts import",
+    "check:public": "tsx scripts/check-public-build.ts",
     "test": "vitest run"
   },
   "dependencies": {

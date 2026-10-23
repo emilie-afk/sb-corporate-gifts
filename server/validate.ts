@@ -70,3 +70,7 @@ export function defined<T extends object>(o: T): Partial<T> {
 export function assertUuid(id: string) {
   if (!uuid.safeParse(id).success) throw badRequest("Invalid id");
 }
+
+/** Names shown in downloads and spreadsheets must not start like a formula (= + - @). */
+export const displayName = (max = 120) =>
+  reqText(max).refine((v) => !/^[=+\-@]/.test(v), "Must not start with = + - or @");

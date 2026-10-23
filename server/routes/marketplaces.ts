@@ -5,8 +5,8 @@ import type pg from "pg";
 import { audit, type Actor } from "../audit";
 import { HttpError, badRequest, conflict, notFound } from "../http";
 import { fetchCollectionProductIds } from "../lib/shopify";
-import { parse, text, reqText, url, email, date, version, assertUuid, defined } from "../validate";
-import { DEFAULT_MILESTONES } from "../../db/seed/providers";
+import { parse, text, reqText, displayName, url, email, date, version, assertUuid, defined } from "../validate";
+import { DEFAULT_MILESTONES } from "../lib/milestones";
 
 export const STATUSES = [
   "prospect", "reconnecting", "preparing_application", "in_discussion", "application_submitted",
@@ -28,7 +28,7 @@ const PROGRESS_SQL = `
   from marketplaces m join channels c on c.id = m.channel_id`;
 
 const detailsSchema = z.object({
-  name: reqText(120).optional(),
+  name: displayName(120).optional(),
   provider_type: z.enum(["marketplace", "supplier_opportunity"]).optional(),
   contact_name: text(120),
   contact_email: email,
@@ -69,7 +69,7 @@ export function marketplaceRoutes(r: Router) {
     const a = actor(b);
     const d = parse(
       detailsSchema.extend({
-        name: reqText(120),
+        name: displayName(120),
         provider_type: z.enum(["marketplace", "supplier_opportunity"]),
         status: z.enum(STATUSES).default("prospect"),
       }),
@@ -90,7 +90,7 @@ export function marketplaceRoutes(r: Router) {
     const d = parse(z.object({
       dry_run: z.boolean().default(false),
       items: z.array(z.object({
-        name: reqText(120),
+        name: displayName(120),
         provider_type: z.enum(["marketplace", "supplier_opportunity"]).default("marketplace"),
         status: z.enum(STATUSES).default("prospect"),
       })).min(1, "Add at least one name").max(200, "Up to 200 names at a time"),

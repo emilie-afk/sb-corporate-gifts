@@ -8,12 +8,12 @@ describe("bulk add marketplaces", () => {
   it("dry run flags names already in use (any case/spacing) and repeats, and creates nothing", async () => {
     const before = (await call("GET", "/marketplaces?include_inactive=1")).body.marketplaces.length;
     const r = await call("POST", "/marketplaces/bulk", { ...S, dry_run: true, items: [
-      { name: "Synthetic Gifts One" }, { name: "  goody  " }, { name: "synthetic gifts   one" }, { name: "Synthetic Gifts Two", status: "in_discussion" },
+      { name: "Synthetic Gifts One" }, { name: "  demo market delta  " }, { name: "synthetic gifts   one" }, { name: "Synthetic Gifts Two", status: "in_discussion" },
     ] });
     expect(r.status).toBe(200);
     expect(r.body.invalid).toBe(2);
     expect(r.body.rows[0].errors).toEqual([]);
-    expect(r.body.rows[1].errors.join()).toMatch(/Already exists as “Goody”/);
+    expect(r.body.rows[1].errors.join()).toMatch(/Already exists as “Demo Market Delta”/);
     expect(r.body.rows[2].errors.join()).toMatch(/Repeated \(same as line 1\)/);
     expect(r.body.rows[3]).toMatchObject({ status: "in_discussion", errors: [] });
     expect((await call("GET", "/marketplaces?include_inactive=1")).body.marketplaces.length).toBe(before);
@@ -21,7 +21,7 @@ describe("bulk add marketplaces", () => {
 
   it("saving is all-or-nothing: one bad name blocks the batch", async () => {
     const before = (await call("GET", "/marketplaces?include_inactive=1")).body.marketplaces.length;
-    const r = await call("POST", "/marketplaces/bulk", { ...S, items: [{ name: "Synthetic Gifts Three" }, { name: "Goody" }] });
+    const r = await call("POST", "/marketplaces/bulk", { ...S, items: [{ name: "Synthetic Gifts Three" }, { name: "Demo Market Delta" }] });
     expect(r.status).toBe(400);
     expect((await call("GET", "/marketplaces?include_inactive=1")).body.marketplaces.length).toBe(before);
   });

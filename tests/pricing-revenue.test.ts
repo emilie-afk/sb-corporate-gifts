@@ -67,12 +67,12 @@ describe("product fulfillment rules", () => {
     const p = potsSucc();
     expect((await call("PATCH", `/products/${p.id}`, { ...S, individual_recipient_fulfillment: "yes", version: p.version })).status).toBe(400);
     for (const fmt of ["individual", "corporate_separate_addresses"]) {
-      const r = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: channels["CorporateGift.com"].id, product_id: p.id, fulfillment_format: fmt });
+      const r = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: channels["Demo Market Charlie"].id, product_id: p.id, fulfillment_format: fmt });
       expect(r.status).toBe(400);
     }
-    const bulk = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: channels["CorporateGift.com"].id, product_id: p.id, fulfillment_format: "bulk_multiple_shipments" });
+    const bulk = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: channels["Demo Market Charlie"].id, product_id: p.id, fulfillment_format: "bulk_multiple_shipments" });
     expect(bulk.status).toBe(200);
-    const mid = channels["CorporateGift.com"].marketplace_id;
+    const mid = channels["Demo Market Charlie"].marketplace_id;
     expect((await call("POST", `/marketplaces/${mid}/products`, { ...S, product_id: p.id, offer_type: "individual" })).status).toBe(400);
     expect((await call("POST", `/marketplaces/${mid}/products`, { ...S, product_id: p.id, offer_type: "bulk_customized", offer_note: "Partner handles distribution?" })).status).toBe(200);
   });
@@ -81,7 +81,7 @@ describe("product fulfillment rules", () => {
     expect((await call("PATCH", `/products/${p.id}`, { ...S, plants_included: "yes", version: p.version })).status).toBe(400);
   });
   it("product decline does not change marketplace status", async () => {
-    const mid = channels["Goody"].marketplace_id;
+    const mid = channels["Demo Market Delta"].marketplace_id;
     const prop = await call("POST", `/marketplaces/${mid}/products`, { ...S, product_id: gift.id, offer_type: "individual", offer_note: "Individual Live to Give box" });
     expect(prop.body.proposal.offer_type).toBe("individual");
     await call("PATCH", `/marketplaces/${mid}/products/${prop.body.proposal.id}`, { ...S, proposal_status: "declined", version: 1 });
@@ -93,7 +93,7 @@ describe("product fulfillment rules", () => {
 
 describe("pricing", () => {
   it("never prefills marketplace supplier prices from the direct discount; unknown stays null", async () => {
-    const r = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: channels["Goody"].id, product_id: gift.id, fulfillment_format: "individual" });
+    const r = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: channels["Demo Market Delta"].id, product_id: gift.id, fulfillment_format: "individual" });
     expect(r.body.record.proposed_supplier_cents).toBeNull();
     expect(r.body.record.customer_discount_pct).toBeNull();
     expect(r.body.record.expected_shipping_cents).toBeNull();
@@ -101,7 +101,7 @@ describe("pricing", () => {
   });
 
   it("agreed versions are immutable; revision keeps history; activation supersedes; overlaps rejected", async () => {
-    const ch = channels["Reachdesk"].id;
+    const ch = channels["Demo Market Alpha"].id;
     const d = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: ch, product_id: gift.id, fulfillment_format: "individual", proposed_supplier_cents: 1900, moq: 1 });
     const rec = d.body.record;
     // agree without price → rejected
@@ -144,7 +144,7 @@ describe("pricing", () => {
   });
 
   it("validates end >= start", async () => {
-    const r = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: channels["Snappy"].id, product_id: gift.id, fulfillment_format: "individual", effective_from: "2026-10-10", effective_to: "2026-10-01" });
+    const r = await call("POST", "/pricing", { ...S, pricing_model: "fixed_supplier", channel_id: channels["Demo Market Echo"].id, product_id: gift.id, fulfillment_format: "individual", effective_from: "2026-10-10", effective_to: "2026-10-01" });
     expect(r.status).toBe(400);
   });
 
@@ -157,7 +157,7 @@ describe("pricing", () => {
 
 describe("revenue", () => {
   it("computes net revenue, blocks duplicates, excludes incomplete records, includes inactive channels", async () => {
-    const pwp = channels["Packed with Purpose"];
+    const pwp = channels["Demo Supplier Hotel"];
     const mp = (await call("GET", `/marketplaces/${pwp.marketplace_id}`)).body.marketplace;
     await call("POST", `/marketplaces/${pwp.marketplace_id}/status-transitions`, { ...S, to_status: "inactive", reason: "partnership_paused", version: mp.version });
 
@@ -180,19 +180,19 @@ describe("revenue", () => {
     expect(neg.body.record.revenue_after_fees_cents).toBe(-3500);
 
     // missing (null) core field → saved but excluded
-    const inc = await call("POST", "/revenue/monthly", { ...S, channel_id: channels["Goody"].id, reporting_month: "2026-09", order_count: 2, gift_sales_cents: 5000 });
+    const inc = await call("POST", "/revenue/monthly", { ...S, channel_id: channels["Demo Market Delta"].id, reporting_month: "2026-09", order_count: 2, gift_sales_cents: 5000 });
     expect(inc.body.record.complete).toBe(false);
     expect(inc.body.record.missing_fields).toContain("refunds_cents");
 
     // negative counts / money rejected
-    expect((await call("POST", "/revenue/monthly", { ...S, channel_id: channels["Snappy"].id, reporting_month: "2026-09", order_count: -1 })).status).toBe(400);
-    expect((await call("POST", "/revenue/monthly", { ...S, channel_id: channels["Snappy"].id, reporting_month: "2026-13" })).status).toBe(400);
+    expect((await call("POST", "/revenue/monthly", { ...S, channel_id: channels["Demo Market Echo"].id, reporting_month: "2026-09", order_count: -1 })).status).toBe(400);
+    expect((await call("POST", "/revenue/monthly", { ...S, channel_id: channels["Demo Market Echo"].id, reporting_month: "2026-13" })).status).toBe(400);
 
     const list = (await call("GET", "/revenue/monthly?month=2026-09")).body;
     expect(list.totals.records_included).toBe(2);
     expect(list.totals.records_incomplete).toBe(1);
     expect(list.totals.net_revenue_cents).toBe(100000);
-    expect(list.byChannel.map((c: any) => c.channel_name)).toContain("Packed with Purpose");
+    expect(list.byChannel.map((c: any) => c.channel_name)).toContain("Demo Supplier Hotel");
 
     // correction with audit; stale version → conflict
     const fix = await call("PATCH", `/revenue/monthly/${a.body.record.id}`, { ...S, refunds_cents: 0, version: 1 });
@@ -204,7 +204,7 @@ describe("revenue", () => {
   });
 
   it("never returns the private authenticated subject to the browser", async () => {
-    for (const p of ["/pricing", "/revenue/monthly", `/marketplaces/${channels["Goody"].marketplace_id}`]) {
+    for (const p of ["/pricing", "/revenue/monthly", `/marketplaces/${channels["Demo Market Delta"].marketplace_id}`]) {
       expect(JSON.stringify((await call("GET", p)).body)).not.toContain("auth_subject");
     }
   });

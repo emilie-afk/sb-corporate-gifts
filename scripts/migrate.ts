@@ -1,12 +1,16 @@
-// Applies db/migrations/*.sql in order (once each), then the initial data (once).
+// Applies db/migrations/*.sql in order (once each) and the baseline (Direct website channel if missing).
 // Usage: DATABASE_URL=... npm run db:migrate
 // On Netlify it runs only in the production build (see netlify.toml) against the Neon DATABASE_URL.
+// It never loads demo data on a deployed runtime and never reads operational data from Git.
+// Locally/tests: SEED_DEMO_DATA=1 additionally loads the fictional demo data (db/seed/demo.ts).
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { getPool, closePool } from "../server/db";
-import { seed } from "./seed";
+import { getPool, closePool, tx } from "../server/db";
+import { ensureBaseline, seedDemo, demoSeedAllowed } from "./seed";
+import { isDeployedRuntime } from "../server/runtime";
 
 export async function migrate(log = true) {
+  if (process.env.SEED_DEMO_DATA === "1" && isDeployedRuntime()) throw new Error("SEED_DEMO_DATA must not be set on a deployed runtime.");
   const pool = getPool();
   await pool.query("create table if not exists schema_migrations (version text primary key, applied_at timestamptz not null default now())");
   const dir = join(import.meta.dirname, "..", "db", "migrations");
@@ -28,7 +32,8 @@ export async function migrate(log = true) {
       client.release();
     }
   }
-  await seed(log);
+  if (demoSeedAllowed()) await seedDemo(log);
+  await tx((c) => ensureBaseline(c));
 }
 
 if (process.argv[1]?.endsWith("migrate.ts")) {
@@ -36,5 +41,6 @@ if (process.argv[1]?.endsWith("migrate.ts")) {
     console.error("DATABASE_URL is not set — add the Neon connection string in Netlify (production, builds + functions).");
     process.exit(1);
   }
-  migrate().then(() => closePool()).catch((e) => { console.error(e); process.exit(1); });
+  // Errors are printed without connection strings or row values.
+  migrate().then(() => closePool()).catch((e) => { console.error(`migration failed: ${e?.code ?? ""} ${String(e?.message ?? e).replace(/postgres(ql)?:\/\/\S+/g, "<db-url>")}`); process.exit(1); });
 }

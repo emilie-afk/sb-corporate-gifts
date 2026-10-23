@@ -39,8 +39,8 @@ describe("payload reduction (runs in the browser and is proposed for the collect
     expect(r.orders).toHaveLength(5);
     const o1 = r.orders.find((o) => o.name === "#910001")!;
     expect(o1.lines).toHaveLength(2);
-    expect(o1.tags).toEqual(["Corporate", "postal"]);
-    expect(o1.billingCompany).toBe("Postal.io");
+    expect(o1.tags).toEqual(["Corporate", "bravo"]);
+    expect(o1.billingCompany).toBe("Bravo Gifting LLC");
     const text = JSON.stringify(r.orders);
     for (const forbidden of ["example.test", "Synthetic Person", "Example St", "555-555", "call me", "THANKS10", "Channel: web"]) expect(text).not.toContain(forbidden);
     expect(r.fields.sort()).toEqual(["billing_company", "source", "tags"]);
@@ -143,11 +143,11 @@ describe("matching rules and classification", () => {
     expect(f.sort()).toEqual(["billing_company", "source", "tags"]);
   });
   it("previews with normalisation before saving, and requires the preview token + name", async () => {
-    const rule = { channel_id: channels["Postal.io / Postal"].id, source_field: "billing_company", operator: "equals", match_value: "  POSTAL.IO " };
+    const rule = { channel_id: channels["Demo Market Bravo"].id, source_field: "billing_company", operator: "equals", match_value: "  BRAVO gifting   LLC " };
     const pv = await call("POST", "/revenue/rules/preview", { op: "create", rule });
     expect(pv.status).toBe(200);
     expect(pv.body.rule_matches.count).toBe(1);
-    expect(pv.body.moved.sample[0]).toMatchObject({ order: "#910001", from: "Unclassified", to: "Postal.io / Postal" });
+    expect(pv.body.moved.sample[0]).toMatchObject({ order: "#910001", from: "Unclassified", to: "Demo Market Bravo" });
     expect(pv.body.affected_months).toEqual(["2026-09-01"]);
     expect((await order("#910001")).class_status).toBe("unclassified"); // nothing saved by a preview
     expect((await call("POST", "/revenue/rules/apply", { op: "create", rule, token: "0".repeat(64), ...S })).status).toBe(409);
@@ -158,11 +158,11 @@ describe("matching rules and classification", () => {
     token = pv.body.token;
   });
   it("same-channel alternative rules are fine; cross-channel matches are conflicts", async () => {
-    const same = { channel_id: channels["Postal.io / Postal"].id, source_field: "tags", operator: "contains", match_value: "post" };
+    const same = { channel_id: channels["Demo Market Bravo"].id, source_field: "tags", operator: "contains", match_value: "post" };
     let pv = await call("POST", "/revenue/rules/preview", { op: "create", rule: same });
     await call("POST", "/revenue/rules/apply", { op: "create", rule: same, token: pv.body.token, ...S });
     expect((await order("#910001")).class_status).toBe("assigned");
-    const other = { channel_id: channels["Goody"].id, source_field: "tags", operator: "equals", match_value: "corporate" };
+    const other = { channel_id: channels["Demo Market Delta"].id, source_field: "tags", operator: "equals", match_value: "corporate" };
     pv = await call("POST", "/revenue/rules/preview", { op: "create", rule: other });
     expect(pv.body.new_conflicts.count).toBe(1);
     await call("POST", "/revenue/rules/apply", { op: "create", rule: other, token: pv.body.token, ...S });
@@ -172,18 +172,18 @@ describe("matching rules and classification", () => {
   });
   it("manual assignment wins until cleared; exclusion is explicit", async () => {
     let o1 = await order("#910001");
-    const as = await call("POST", `/revenue/orders/${o1.id}/classify`, { ...S, action: "assign", channel_id: channels["Postal.io / Postal"].id, reason: "Confirmed with Postal invoice", version: o1.version });
+    const as = await call("POST", `/revenue/orders/${o1.id}/classify`, { ...S, action: "assign", channel_id: channels["Demo Market Bravo"].id, reason: "Confirmed with partner invoice", version: o1.version });
     expect(as.status).toBe(200);
     expect((await order("#910001")).class_status).toBe("assigned");
     const rules = (await call("GET", "/revenue/rules")).body.rules;
-    const goody = rules.find((r: any) => r.channel_name === "Goody");
-    const pv = await call("POST", "/revenue/rules/preview", { op: "disable", rule_id: goody.id });
+    const deltaRule = rules.find((r: any) => r.channel_name === "Demo Market Delta");
+    const pv = await call("POST", "/revenue/rules/preview", { op: "disable", rule_id: deltaRule.id });
     expect(pv.body.manual_overrides_kept.count).toBe(1);
-    await call("POST", "/revenue/rules/apply", { op: "disable", rule_id: goody.id, token: pv.body.token, ...S });
+    await call("POST", "/revenue/rules/apply", { op: "disable", rule_id: deltaRule.id, token: pv.body.token, ...S });
     o1 = await order("#910001");
     expect(o1.class_manual).toBe(true);
     await call("POST", `/revenue/orders/${o1.id}/classify`, { ...S, action: "clear", version: o1.version });
-    expect((await order("#910001")).class_status).toBe("assigned"); // back to rules (Postal only now)
+    expect((await order("#910001")).class_status).toBe("assigned"); // back to rules (Bravo only now)
     const o5 = await order("#910005");
     expect((await call("POST", `/revenue/orders/${o5.id}/classify`, { ...S, action: "exclude", version: o5.version })).status).toBe(400); // reason required
     await call("POST", `/revenue/orders/${o5.id}/classify`, { ...S, action: "exclude", reason: "Ordinary retail gift card", version: o5.version });
@@ -192,7 +192,7 @@ describe("matching rules and classification", () => {
     expect(h[0]).toMatchObject({ action: "manual_exclude", signer_name: "Test Person" });
   });
   it("rule preview tokens expire when data changes", async () => {
-    const rule = { channel_id: channels["Reachdesk"].id, source_field: "tags", operator: "equals", match_value: "reachdesk" };
+    const rule = { channel_id: channels["Demo Market Alpha"].id, source_field: "tags", operator: "equals", match_value: "alpha-gifting" };
     const pv = await call("POST", "/revenue/rules/preview", { op: "create", rule });
     await ingest(payload({ exportedAt: "2026-10-11T08:00:00.000Z", mutate: (o) => { o.find((y: any) => y.name === "#910004").refundedAmount = "5.00"; } }));
     expect((await call("POST", "/revenue/rules/apply", { op: "create", rule, token: pv.body.token, ...S })).status).toBe(409);
@@ -202,11 +202,11 @@ describe("matching rules and classification", () => {
 
 describe("summary and reconciliation", () => {
   it("combines Shopify-derived and manual revenue without blindly adding legacy totals", async () => {
-    const postal = channels["Postal.io / Postal"].id;
+    const bravo = channels["Demo Market Bravo"].id;
     // Legacy manual monthly total that may duplicate Shopify sales
-    const legacy = await call("POST", "/revenue/monthly", { ...S, channel_id: postal, reporting_month: "2026-09", order_count: 1, units_sold: 10, gift_sales_cents: 28000, shipping_revenue_cents: 0, refunds_cents: 0, marketplace_fees_cents: 0 });
+    const legacy = await call("POST", "/revenue/monthly", { ...S, channel_id: bravo, reporting_month: "2026-09", order_count: 1, units_sold: 10, gift_sales_cents: 28000, shipping_revenue_cents: 0, refunds_cents: 0, marketplace_fees_cents: 0 });
     let sm = (await call("GET", "/revenue/summary?from=2026-09&to=2026-09")).body;
-    let row = sm.rows.find((r: any) => r.channel_id === postal && r.month === "2026-09");
+    let row = sm.rows.find((r: any) => r.channel_id === bravo && r.month === "2026-09");
     expect(row.shopify.net_cents).toBe(28000);
     expect(row.manual_cents).toBe(0);
     expect(row.combined_cents).toBe(28000);
@@ -216,11 +216,11 @@ describe("summary and reconciliation", () => {
     const rec = await call("POST", `/revenue/monthly/${legacy.body.record.id}/reconcile`, { ...S, reconciliation: "covered_by_shopify", note: "Same order #910001", version: legacy.body.record.version });
     expect(rec.status).toBe(200);
     // off-Shopify sale + actual fee
-    expect((await call("POST", "/revenue/adjustments", { ...S, channel_id: postal, reporting_month: "2026-09", kind: "off_shopify_sale", gift_sales_cents: 50000, reason: "Invoice paid by bank transfer", reference: "INV-SYN-1", entry_date: "2026-09-20" })).status).toBe(200);
-    expect((await call("POST", "/revenue/adjustments", { ...S, channel_id: postal, reporting_month: "2026-09", kind: "off_shopify_sale", gift_sales_cents: 50000, reason: "dup", reference: "inv-syn-1 ", entry_date: "2026-09-20" })).status).toBe(409);
-    expect((await call("POST", "/revenue/adjustments", { ...S, channel_id: postal, reporting_month: "2026-09", kind: "fee", marketplace_fees_cents: 3500, reason: "Postal statement fee", reference: "STMT-SYN-9", entry_date: "2026-09-30" })).status).toBe(200);
+    expect((await call("POST", "/revenue/adjustments", { ...S, channel_id: bravo, reporting_month: "2026-09", kind: "off_shopify_sale", gift_sales_cents: 50000, reason: "Invoice paid by bank transfer", reference: "INV-SYN-1", entry_date: "2026-09-20" })).status).toBe(200);
+    expect((await call("POST", "/revenue/adjustments", { ...S, channel_id: bravo, reporting_month: "2026-09", kind: "off_shopify_sale", gift_sales_cents: 50000, reason: "dup", reference: "inv-syn-1 ", entry_date: "2026-09-20" })).status).toBe(409);
+    expect((await call("POST", "/revenue/adjustments", { ...S, channel_id: bravo, reporting_month: "2026-09", kind: "fee", marketplace_fees_cents: 3500, reason: "Partner statement fee", reference: "STMT-SYN-9", entry_date: "2026-09-30" })).status).toBe(200);
     sm = (await call("GET", "/revenue/summary?from=2026-09&to=2026-09")).body;
-    row = sm.rows.find((r: any) => r.channel_id === postal && r.month === "2026-09");
+    row = sm.rows.find((r: any) => r.channel_id === bravo && r.month === "2026-09");
     expect(row.manual_cents).toBe(50000);
     expect(row.combined_cents).toBe(78000);
     expect(row.fees_cents).toBe(3500);
@@ -236,7 +236,7 @@ describe("summary and reconciliation", () => {
   it("never lets a price change recalculate imported revenue", async () => {
     const before = (await call("GET", "/revenue/summary?from=2026-09&to=2026-09")).body.totals.combined_cents;
     const g = (await call("POST", "/products", { ...S, name: "Synthetic gift", selected: true })).body.product;
-    await call("POST", "/pricing", { ...S, channel_id: channels["Postal.io / Postal"].id, product_id: g.id, fulfillment_format: "individual", pricing_model: "fixed_supplier", proposed_supplier_cents: 999 });
+    await call("POST", "/pricing", { ...S, channel_id: channels["Demo Market Bravo"].id, product_id: g.id, fulfillment_format: "individual", pricing_model: "fixed_supplier", proposed_supplier_cents: 999 });
     expect((await call("GET", "/revenue/summary?from=2026-09&to=2026-09")).body.totals.combined_cents).toBe(before);
   });
 });

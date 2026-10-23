@@ -11,7 +11,7 @@ const seen: string[] = [];
 
 beforeAll(async () => {
   await resetDb();
-  mid = (await call("GET", "/marketplaces")).body.marketplaces.find((m: any) => m.name === "Goody").id;
+  mid = (await call("GET", "/marketplaces")).body.marketplaces.find((m: any) => m.name === "Demo Market Delta").id;
   const ins = async (pid: number, vid: number, name: string, family: string, selected = true) => (await getPool().query(
     `insert into products (source, shopify_product_id, shopify_variant_id, name, variant, sku, web_price_cents, selected, family)
      values ('shopify', $1, $2, $3, 'Simple', $4, 3000, $5, $6) returning *`, [pid, vid, name, `SYN-${vid}`, selected, family])).rows[0];

@@ -9,6 +9,8 @@ export default defineConfig({
     env: {
       // Tests DROP and recreate the schema — point TEST_DATABASE_URL at a throwaway database only.
       DATABASE_URL: process.env.TEST_DATABASE_URL ?? "postgresql://postgres@localhost:5432/gifting_test?host=/tmp",
+      // Tests use the fictional demo data only (db/seed/demo.ts).
+      SEED_DEMO_DATA: "1",
     },
   },
 });

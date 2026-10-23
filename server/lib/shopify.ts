@@ -36,14 +36,22 @@ export async function politeGet(url: string, attempts = 3): Promise<any> {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
     try {
-      const res = await fetcher(url, { signal: ctrl.signal, headers: { accept: "application/json", "user-agent": "SB-corporate-gifting-tracker/1.0" } });
+      let target = new URL(url);
+      let res = await fetcher(target.toString(), { signal: ctrl.signal, redirect: "manual", headers: { accept: "application/json", "user-agent": "SB-corporate-gifting-tracker/1.0" } });
+      // Redirects are followed only within the configured store origin (never to another host).
+      for (let hop = 0; hop < 3 && res.status >= 300 && res.status < 400 && res.headers.get("location"); hop++) {
+        target = new URL(res.headers.get("location")!, target);
+        if (target.origin !== new URL(SHOPIFY_ORIGIN).origin) throw Object.assign(new Error("redirect outside the store"), { final: true });
+        res = await fetcher(target.toString(), { signal: ctrl.signal, redirect: "manual", headers: { accept: "application/json", "user-agent": "SB-corporate-gifting-tracker/1.0" } });
+      }
       if (res.ok) return await res.json();
       lastErr = `HTTP ${res.status}`;
       if (res.status !== 429 && res.status < 500) break;
       const ra = Number(res.headers.get("retry-after"));
       await sleep(Number.isFinite(ra) && ra > 0 ? Math.min(ra * 1000, 4000) : 800 * (i + 1));
     } catch (e: any) {
-      lastErr = e?.name === "AbortError" ? "timeout" : String(e?.message ?? e);
+      if (e?.final) { lastErr = String(e.message); break; }
+      lastErr = e?.name === "AbortError" ? "timeout" : "network error";
       await sleep(800 * (i + 1));
     } finally {
       clearTimeout(t);
