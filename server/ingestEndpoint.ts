@@ -3,6 +3,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { json, errorResponse } from "./http";
 import { ingestPayload } from "./lib/ingest";
+import { hit, clientKey, LIMITS } from "./rateLimit";
+import { readBounded } from "./body";
 
 const MAX_BYTES = 6 * 1024 * 1024;
 
@@ -20,9 +22,21 @@ export async function handleIngest(req: Request): Promise<Response> {
     if (req.method !== "POST") return json({ error: { code: "method_not_allowed", message: "POST only" } }, 405);
     const ok = secretOk(req.headers.get("authorization"));
     if (ok === "disabled") return json({ error: { code: "ingest_disabled", message: "Ingestion is not configured." } }, 503);
+    // Cheap header checks first (no database work): content type and declared size.
+    if (!/^application\/json\b/i.test(req.headers.get("content-type") ?? "")) return json({ error: { code: "unsupported_media_type", message: "Send application/json." } }, 415);
+    const declared = req.headers.get("content-length");
+    if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > MAX_BYTES))
+      return json({ error: { code: "too_large", message: "Payload larger than 6 MB; split the export window." } }, 413);
+    // Then the durable counter — before the credential check, so guessing the secret is limited too, and
+    // before the body is read, so unauthenticated senders are limited before any large upload is buffered.
+    await hit({ bucket: `ingest:${clientKey(req)}`, ...LIMITS.ingest });
     if (!ok) return json({ error: { code: "unauthorized", message: "Invalid ingestion credential." } }, 401);
-    const text = await req.text();
-    if (text.length > MAX_BYTES) return json({ error: { code: "too_large", message: "Payload larger than 6 MB; split the export window." } }, 413);
+    // Byte-limited read (declared length checked first; the stream is abandoned past 6 MB).
+    let text: string;
+    try { text = await readBounded(req, MAX_BYTES); } catch (e: any) {
+      if (e?.status === 413) return json({ error: { code: "too_large", message: "Payload larger than 6 MB; split the export window." } }, 413);
+      throw e;
+    }
     let payload: unknown;
     try { payload = JSON.parse(text); } catch { return json({ error: { code: "invalid_json", message: "Body is not JSON." } }, 400); }
     const out = await ingestPayload(payload, { source: "collector", signer: "Collector", sub: null });

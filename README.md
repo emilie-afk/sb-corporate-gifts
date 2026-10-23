@@ -15,8 +15,11 @@ Independent of the team's task tracker (no links or sync).
 | `netlify/functions/api.ts` | Single function serving `/api/*` |
 | `server/` | API: auth, router, validation, audit, routes, Shopify/Sheets/cost logic |
 | `db/migrations/*.sql` | Schema (constraints, overlap exclusion, immutability trigger) |
-| `db/seed/providers.ts`, `scripts/seed.ts` | Initial data, applied once per database by `db:migrate` |
-| `scripts/migrate.ts` | Applies pending migrations, then the initial data once |
+| `db/seed/demo.ts`, `scripts/seed.ts` | **Fictional** demo data (local/tests only, `SEED_DEMO_DATA=1`) and the Direct website baseline row |
+| `scripts/private-data.ts` | Private export/import of operational records between databases (never via Git) |
+| `scripts/check-public-build.ts` | Fails if build output / folders contain secrets, sheet links, real emails, source maps or private terms |
+| `docs/SECURITY.md` | Security model, private data handling, rollout and rollback |
+| `scripts/migrate.ts` | Applies pending migrations and ensures the Direct website row exists (no business data) |
 | `scripts/dev-server.ts` | Local preview server (built SPA + same API handler) |
 | `tests/` | Business-rule tests (Vitest, real Postgres); `tests/fixtures/*SYNTHETIC*` are invented data |
 | `scripts/ui-smoke.ts` | Browser smoke test + review screenshots (Playwright) |
@@ -27,12 +30,14 @@ Independent of the team's task tracker (no links or sync).
 npm install
 createdb gifting && createdb gifting_test          # any Postgres 14+
 export DATABASE_URL=postgresql://localhost/gifting
-npm run db:migrate                                 # schema + initial data (once)
+npm run db:demo                                    # schema + FICTIONAL demo data (local only)
 npm test                                            # uses TEST_DATABASE_URL (drops/recreates its schema!)
 npm run build && LOCAL_DEV_LOGIN=1 npm run dev      # http://localhost:8888 with a placeholder local login
 ```
 
-`LOCAL_DEV_LOGIN` exists only in `scripts/dev-server.ts`; the deployed function always requires Google sign-in.
+`LOCAL_DEV_LOGIN` exists only in `scripts/dev-server.ts`, which refuses to start on Netlify/Lambda or with
+`NODE_ENV=production`; the deployed function always requires Google sign-in. Real records are never in Git: copy
+them between databases with the private export/import in `docs/SECURITY.md`.
 
 ## Environment variables (names only — set values privately)
 
@@ -47,6 +52,10 @@ npm run build && LOCAL_DEV_LOGIN=1 npm run dev      # http://localhost:8888 with
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | optional, secret | Only if Product Master becomes private (see below) |
 | `SHOPIFY_CATALOG_ORIGIN` | optional | Defaults to `https://succulentsbox.com` |
 | `DB_POOL_MAX`, `DATABASE_SSL` | optional | Pool size; `false` disables TLS (local only) |
+| `BASELINE_DIRECT_DISCOUNT_PCT`, `BASELINE_CORPORATE_MOQ` | optional, Builds | Only used when the *Direct website* row is created for the first time in an empty database. Existing values are never changed; edit terms in the app |
+| `SESSION_NOT_BEFORE` | optional, Functions | ISO time with zone (`2026-10-23T18:00:00Z`); sessions issued earlier are rejected (emergency sign-out of everyone). An invalid value denies all access |
+| `SEED_DEMO_DATA` | local only | `1` loads fictional demo data; refused on Netlify/production and in any database with records in any operational table (only the untouched automatic Direct website row is allowed) |
+| `PRIVATE_TERMS_FILE` | local only | Path to a git-ignored list of confidential terms for `npm run check:public` |
 
 ## Netlify
 
@@ -55,8 +64,10 @@ npm run build && LOCAL_DEV_LOGIN=1 npm run dev      # http://localhost:8888 with
 Security headers include `noindex`, `X-Frame-Options: DENY`, and a strict CSP.
 Database: **Neon** (free plan) PostgreSQL. Put the Neon **pooled** connection string in Netlify as
 `DATABASE_URL` (secret; context **Production**; scopes **Builds** and **Functions**). Production builds run
-`npm run db:migrate && npm run build` (see `netlify.toml`): pending migrations and the one-time initial data are
-applied before the site builds, and a failure stops the deploy. Preview/branch builds never touch the database.
+`npm run build && npm run check:public && npm run db:migrate` (see `netlify.toml`): the public output is scanned,
+then pending migrations are applied; any failure stops the deploy. Preview/branch builds never touch the database.
+No business data is created by the build (only the *Direct website* channel row if it is missing); demo data cannot
+run there. Source maps are off.
 
 ## Google sign-in
 
@@ -69,7 +80,10 @@ applied before the site builds, and a failure stops the deploy. Preview/branch b
 
 Flow: server-side authorization-code exchange → ID token verified against Google JWKS (issuer, audience, nonce,
 `email_verified`) → email must be in `APPROVED_GOOGLE_EMAILS` → HttpOnly, SameSite=Lax session cookie (12 h).
-The allowlist is re-checked on every request. Mutations also require the `X-Requested-With: sbg` header (CSRF).
+The allowlist is re-checked on every request (removing a login revokes it at once). Mutations also require the
+`X-Requested-With: sbg` header, a same-origin request (Origin / Sec-Fetch-Site) and a JSON body (CSRF). Sign-in,
+callback, ingestion, expensive operations and overall writes have durable limits stored in the database
+(`rate_limits`, hashed keys). Missing `SESSION_SECRET`/allowlist/OAuth settings deny all access.
 The Google `sub` is stored privately in audit columns and stripped from all API responses.
 "Your name" is a self-reported signature, never treated as verified identity.
 
@@ -79,7 +93,10 @@ Read-only, server-side. Product Master is shared "Anyone with the link can view"
 Google's CSV export of that tab (`/export?format=csv&gid=<tab gid>`). No credentials are needed; if the sheet is
 ever made private, set `GOOGLE_SERVICE_ACCOUNT_JSON` (service account shared as Viewer) and the Sheets API is used
 instead. Each vendor tab is configured in **Pricing → Cost source settings** by pasting the tab's link (the gid is
-taken from it). Header line breaks/extra spaces are ignored when matching column names. Gifts are mapped to exact
+taken from it). Sheet locations are stored in the database only; lists show a short reference (`…abcd`) and a
+signed-in team member can reveal one with **Show saved link** (audited). The sheet stays link-viewable, so anyone who
+has the link can read it — hiding it in the app is not Google access control. The server only contacts
+`docs.google.com` / `*.googleusercontent.com` (and the Sheets API hosts) over https, checking every redirect. Header line breaks/extra spaces are ignored when matching column names. Gifts are mapped to exact
 rows from **Gifts → Edit → Product Master cost mapping**. No mappings are pre-filled.
 
 ## Website catalog
@@ -100,7 +117,7 @@ Collection membership can be imported for `succulentsbox.com/collections/<handle
 `GET/POST /pricing`, `GET/PATCH /pricing/:id` (draft/proposed only), `GET /pricing/:id/history`,
 `POST /pricing/:id/{revisions|activate|expire}`, `GET/POST /revenue/monthly`, `PATCH /revenue/monthly/:id`,
 `GET /revenue/monthly/:id/history`, `GET/POST /sources`, `PATCH /sources/:id`, `POST /sources/:id/lookup`,
-`GET /imports`, `POST /imports/shopify`, `POST /imports/shopify/:id/{next|confirm}`,
+`GET /sources/:id/location` (audited), `GET /imports`, `POST /imports/shopify`, `POST /imports/shopify/:id/{next|confirm}`,
 `POST /imports/product-master`, `POST /imports/product-master/:id/confirm`, `POST /imports/:id/discard`,
 `GET /auth/{login|callback|session}`, `POST /auth/logout`.
 
