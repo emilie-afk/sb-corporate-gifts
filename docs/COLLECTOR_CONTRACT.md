@@ -55,7 +55,7 @@ Content-Type: application/json
     "subtotal": "282.00", "shipping": "0.00", "taxes": "22.40", "duties": null, "total": "304.40",
     "discountAmount": "20.00", "refundedAmount": "0.00",
     "source": "web", "tags": ["Corporate", "bravo"], "billingCompany": "Bravo Gifting LLC",
-    "lines": [{ "sku": "LTG-THANKS-S", "name": "Live to Give Thank You Box - Simple", "quantity": 10, "price": "30.00", "discount": "20.00" }]
+    "lines": [{ "sku": "SYN-THANKS-S", "name": "Live to Give Thank You Box - Simple", "quantity": 10, "price": "30.00", "discount": "20.00" }]
   }]
 }
 ```

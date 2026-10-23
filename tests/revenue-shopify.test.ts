@@ -143,7 +143,7 @@ describe("matching rules and classification", () => {
     expect(f.sort()).toEqual(["billing_company", "source", "tags"]);
   });
   it("previews with normalisation before saving, and requires the preview token + name", async () => {
-    const rule = { channel_id: channels["Demo Market Bravo"].id, source_field: "billing_company", operator: "equals", match_value: "  Bravo Gifting LLC " };
+    const rule = { channel_id: channels["Demo Market Bravo"].id, source_field: "billing_company", operator: "equals", match_value: "  BRAVO gifting   LLC " };
     const pv = await call("POST", "/revenue/rules/preview", { op: "create", rule });
     expect(pv.status).toBe(200);
     expect(pv.body.rule_matches.count).toBe(1);
@@ -172,18 +172,18 @@ describe("matching rules and classification", () => {
   });
   it("manual assignment wins until cleared; exclusion is explicit", async () => {
     let o1 = await order("#910001");
-    const as = await call("POST", `/revenue/orders/${o1.id}/classify`, { ...S, action: "assign", channel_id: channels["Demo Market Bravo"].id, reason: "Confirmed with Demo Market Bravo invoice", version: o1.version });
+    const as = await call("POST", `/revenue/orders/${o1.id}/classify`, { ...S, action: "assign", channel_id: channels["Demo Market Bravo"].id, reason: "Confirmed with partner invoice", version: o1.version });
     expect(as.status).toBe(200);
     expect((await order("#910001")).class_status).toBe("assigned");
     const rules = (await call("GET", "/revenue/rules")).body.rules;
-    const delta = rules.find((r: any) => r.channel_name === "Demo Market Delta");
-    const pv = await call("POST", "/revenue/rules/preview", { op: "disable", rule_id: delta.id });
+    const deltaRule = rules.find((r: any) => r.channel_name === "Demo Market Delta");
+    const pv = await call("POST", "/revenue/rules/preview", { op: "disable", rule_id: deltaRule.id });
     expect(pv.body.manual_overrides_kept.count).toBe(1);
-    await call("POST", "/revenue/rules/apply", { op: "disable", rule_id: delta.id, token: pv.body.token, ...S });
+    await call("POST", "/revenue/rules/apply", { op: "disable", rule_id: deltaRule.id, token: pv.body.token, ...S });
     o1 = await order("#910001");
     expect(o1.class_manual).toBe(true);
     await call("POST", `/revenue/orders/${o1.id}/classify`, { ...S, action: "clear", version: o1.version });
-    expect((await order("#910001")).class_status).toBe("assigned"); // back to rules (Demo Market Bravo only now)
+    expect((await order("#910001")).class_status).toBe("assigned"); // back to rules (Bravo only now)
     const o5 = await order("#910005");
     expect((await call("POST", `/revenue/orders/${o5.id}/classify`, { ...S, action: "exclude", version: o5.version })).status).toBe(400); // reason required
     await call("POST", `/revenue/orders/${o5.id}/classify`, { ...S, action: "exclude", reason: "Ordinary retail gift card", version: o5.version });
@@ -218,7 +218,7 @@ describe("summary and reconciliation", () => {
     // off-Shopify sale + actual fee
     expect((await call("POST", "/revenue/adjustments", { ...S, channel_id: bravo, reporting_month: "2026-09", kind: "off_shopify_sale", gift_sales_cents: 50000, reason: "Invoice paid by bank transfer", reference: "INV-SYN-1", entry_date: "2026-09-20" })).status).toBe(200);
     expect((await call("POST", "/revenue/adjustments", { ...S, channel_id: bravo, reporting_month: "2026-09", kind: "off_shopify_sale", gift_sales_cents: 50000, reason: "dup", reference: "inv-syn-1 ", entry_date: "2026-09-20" })).status).toBe(409);
-    expect((await call("POST", "/revenue/adjustments", { ...S, channel_id: bravo, reporting_month: "2026-09", kind: "fee", marketplace_fees_cents: 3500, reason: "Demo Market Bravo statement fee", reference: "STMT-SYN-9", entry_date: "2026-09-30" })).status).toBe(200);
+    expect((await call("POST", "/revenue/adjustments", { ...S, channel_id: bravo, reporting_month: "2026-09", kind: "fee", marketplace_fees_cents: 3500, reason: "Partner statement fee", reference: "STMT-SYN-9", entry_date: "2026-09-30" })).status).toBe(200);
     sm = (await call("GET", "/revenue/summary?from=2026-09&to=2026-09")).body;
     row = sm.rows.find((r: any) => r.channel_id === bravo && r.month === "2026-09");
     expect(row.manual_cents).toBe(50000);

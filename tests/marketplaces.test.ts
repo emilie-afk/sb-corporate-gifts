@@ -54,13 +54,13 @@ describe("seed data", () => {
       for (const r of d.body.requirements) expect(r.confirmation_state).not.toBe("confirmed");
     }
   });
-  it("seeds Direct website as a channel (not a marketplace) with its discount and MOQ", async () => {
+  it("demo data has Direct website as a channel (not a marketplace) with the demo discount and MOQ", async () => {
     const ch = (await call("GET", "/channels")).body.channels;
     const direct = ch.find((c: any) => c.name === "Direct website");
     expect(direct.type).toBe("direct");
     expect(direct.marketplace_id).toBeNull();
     expect(Number(direct.default_discount_pct)).toBe(15);
-    expect(direct.corporate_moq).toBe(10);
+    expect(direct.corporate_moq).toBe(12);
   });
   it("seeds no revenue and no prices", async () => {
     expect((await call("GET", "/revenue/monthly")).body.revenue).toHaveLength(0);

@@ -5,3 +5,5 @@ dist
 !.env.example
 .netlify
 screenshots/
+private/
+*.private.json

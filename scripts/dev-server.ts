@@ -5,8 +5,9 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join, extname, normalize } from "node:path";
 import { createApp } from "../server/app";
+import { isDeployedRuntime } from "../server/runtime";
 
-if (process.env.NETLIFY || process.env.CONTEXT) throw new Error("dev-server is for local use only");
+if (isDeployedRuntime()) throw new Error("dev-server is for local use only (deployed/production environment detected)");
 const devLogin = process.env.LOCAL_DEV_LOGIN === "1";
 if (devLogin && !process.env.SESSION_SECRET) process.env.SESSION_SECRET = "local-dev-only-secret-local-dev-only-secret";
 const app = createApp(devLogin ? { devSession: { sub: "local-dev", email: "local-preview@example.test" } } : {});

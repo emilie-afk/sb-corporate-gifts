@@ -51,7 +51,7 @@ await page.getByRole("dialog", { name: "Mark not applicable" }).getByRole("butto
 
 // ---- Communication note
 await page.getByRole("button", { name: "Add communication" }).click();
-await page.getByLabel("Summary").fill("Example only (screenshot): emailed demo contact about reactivating the vendor account.");
+await page.getByLabel("Summary").fill("Example only (screenshot): emailed the demo contact about a vendor account.");
 await sign(page);
 await page.getByRole("dialog", { name: "Add communication" }).getByRole("button", { name: "Save" }).click();
 await page.getByText("Example only (screenshot)").waitFor();
@@ -161,7 +161,7 @@ await pf.getByLabel("Fulfillment format").selectOption("corporate_separate_addre
 check("direct discount prefilled from channel default", (await pf.getByLabel("Customer discount %").inputValue()) === "15");
 await pf.getByText("Suggested customer price").waitFor();
 const calc = await pf.locator(".calc").first().innerText();
-check("direct suggested price = retail × (1 − channel discount)", calc.includes("$26.10"), calc.split("\n")[0]);
+check("direct suggested price = retail × (1 − demo 15%)", calc.includes("$27.74"), calc.split("\n")[0]);
 await pf.getByRole("button", { name: /More details/ }).click();
 check("optional fields live under More details", await pf.getByLabel("Payment terms").isVisible());
 await sign(page);
@@ -265,7 +265,7 @@ await page.getByRole("button", { name: "Add rule" }).click();
 const rf = page.getByRole("dialog", { name: "Add matching rule" });
 await rf.getByLabel("Channel").selectOption({ label: "Demo Market Bravo" });
 await rf.getByLabel("Source field").selectOption("billing_company");
-await rf.getByLabel("Match value").fill("  Bravo Gifting LLC ");
+await rf.getByLabel("Match value").fill("  bravo GIFTING llc ");
 await rf.getByRole("button", { name: "Preview impact" }).click();
 await rf.getByText("orders change channel/state").waitFor();
 check("rule preview shows matching count before saving", (await rf.locator(".stats").innerText()).includes("1 orders match"));
@@ -274,7 +274,7 @@ await sign(page);
 await rf.getByRole("button", { name: "Confirm and apply" }).click();
 await page.locator("tbody tr", { hasText: "Demo Market Bravo" }).first().waitFor();
 const bravoRow = await page.locator("table.dense tbody tr", { hasText: "Demo Market Bravo" }).first().innerText();
-check("assigned Shopify order appears in Demo Market Bravo revenue ($280.00, tax/Route/discount handled)", bravoRow.includes("$280.00"), bravoRow.replace(/\s+/g, " "));
+check("assigned Shopify order appears in Bravo revenue ($280.00, tax/Route/discount handled)", bravoRow.includes("$280.00"), bravoRow.replace(/\s+/g, " "));
 check("fees shown as not recorded when unknown", bravoRow.includes("Fees not recorded"));
 
 await page.getByRole("button", { name: "Add manual entry" }).click();

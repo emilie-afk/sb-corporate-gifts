@@ -8,7 +8,7 @@ describe("bulk add marketplaces", () => {
   it("dry run flags names already in use (any case/spacing) and repeats, and creates nothing", async () => {
     const before = (await call("GET", "/marketplaces?include_inactive=1")).body.marketplaces.length;
     const r = await call("POST", "/marketplaces/bulk", { ...S, dry_run: true, items: [
-      { name: "Synthetic Gifts One" }, { name: "  delta  " }, { name: "synthetic gifts   one" }, { name: "Synthetic Gifts Two", status: "in_discussion" },
+      { name: "Synthetic Gifts One" }, { name: "  demo market delta  " }, { name: "synthetic gifts   one" }, { name: "Synthetic Gifts Two", status: "in_discussion" },
     ] });
     expect(r.status).toBe(200);
     expect(r.body.invalid).toBe(2);

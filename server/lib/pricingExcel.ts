@@ -357,7 +357,7 @@ export async function buildTemplate(channelNames: string[]): Promise<Buffer> {
     ["Fulfillment format", ["Individual", "Corporate — separate addresses", "Bulk — one location", "Bulk — multiple shipments"]],
     ["Status", ["Draft", "Proposed", "Agreed", "Active"]],
   ];
-  lists.forEach(([h, vals], i) => { ref.getColumn(i + 1).values = [h, ...vals]; });
+  lists.forEach(([h, vals], i) => { ref.getColumn(i + 1).values = [h, ...vals.map(safeText)]; });
   ref.getRow(1).font = { bold: true };
   ref.columns.forEach((c) => (c.width = 34));
   const listRef = (i: number, n: number) => `Lists!$${String.fromCharCode(65 + i)}$2:$${String.fromCharCode(65 + i)}$${n + 1}`;
@@ -392,4 +392,12 @@ export async function buildTemplate(channelNames: string[]): Promise<Buffer> {
     : k === "gift_name" ? " — reference only" : optional ? " — optional" : "";
   for (const c of cols) help.addRow([c.header + need(c.key, c.optional), c.help]);
   return Buffer.from(await wb.xlsx.writeBuffer());
+}
+
+/**
+ * Text written into a spreadsheet the team downloads: a value that starts like a formula (= + - @, tab, CR)
+ * is prefixed with an apostrophe so spreadsheet apps show it as text instead of evaluating it.
+ */
+export function safeText(v: string): string {
+  return /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
 }

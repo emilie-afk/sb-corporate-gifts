@@ -58,7 +58,7 @@ describe("pricing form references", () => {
     expect(r.cost).toMatchObject({ cents: 2000, source: "product_master", includes: "Includes handwritten card" });
     expect(r.cost.components[0]).toMatchObject({ basis: "per_piece", quantity: 5, source_cost: 4 });
     expect(r.channel).toMatchObject({ corporate_moq: 12, default_discount_pct: 15 });
-    expect(r.suggested_direct_price_cents).toBe(2240);
+    expect(r.suggested_direct_price_cents).toBe(2380); // 2800 × (1 − 15%) with the demo discount
     const m = (await call("GET", `/pricing/references?product_id=${giftA.id}&channel_id=${ch["Demo Market Alpha"].id}`)).body.references;
     expect(m.suggested_direct_price_cents).toBeNull(); // the direct discount never sets marketplace prices
   });
@@ -130,7 +130,7 @@ describe("Excel pricing import", () => {
   it("previews matches, errors, ambiguity, duplicates and fulfilment restrictions", async () => {
     const file = await xlsx([
       HEAD,
-      row({ Channel: "delta ", "Shopify variant ID": "91000001", "Gift name (reference only)": "Synthetic Thank You Box", "Proposed supplier price": 19, "Fulfillment format": "Individual", Status: "Draft", "Customer shipping charge": "" }),
+      row({ Channel: "demo market delta ", "Shopify variant ID": "91000001", "Gift name (reference only)": "Synthetic Thank You Box", "Proposed supplier price": 19, "Fulfillment format": "Individual", Status: "Draft", "Customer shipping charge": "" }),
       row({ Channel: "Demo Market Delta", "Gift SKU": "SYN-DUP", "Fulfillment format": "Individual", Status: "Draft", "Proposed supplier price": 9 }),
       row({ Channel: "Demo Market Delta", "Gift SKU": "NOPE-1", "Fulfillment format": "Individual", Status: "Draft" }),
       row({ Channel: "Demo Market Delta", "Gift SKU": "SYN-BD-S", "Fulfillment format": "Individual", Status: "Draft", "Proposed supplier price": "-3" }),
