@@ -49,6 +49,7 @@ them between databases with the private export/import in `docs/SECURITY.md`.
 | `APPROVED_GOOGLE_EMAILS` | Netlify, secret | Comma-separated approved login(s). **Never** in code, seed, docs or screenshots |
 | `APP_BASE_URL` | Netlify, per deploy context | Site origin used to build the OAuth redirect |
 | `CORPORATE_INGEST_SECRET` | Netlify (Functions), secret | ≥ 32 random chars; bearer credential for `POST /api/ingest/shopify-orders` (collector). Unset = endpoint disabled |
+| `CORPORATE_REPORTING_SECRET` | Netlify (Functions), secret | ≥ 32 random chars, different from every other secret; bearer credential for the read-only `GET /api/reporting/v1/*` routes (Marketing Dashboard server). Unset = disabled |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | optional, secret | Only if Product Master becomes private (see below) |
 | `SHOPIFY_CATALOG_ORIGIN` | optional | Defaults to `https://succulentsbox.com` |
 | `DB_POOL_MAX`, `DATABASE_SSL` | optional | Pool size; `false` disables TLS (local only) |
@@ -123,6 +124,15 @@ Collection membership can be imported for `succulentsbox.com/collections/<handle
 
 Conventions: every mutation needs `signer_name` and (for edits) the record's `version` — a stale version returns
 `409 conflict`. Validation errors return `400` with `error.details.fields`. Money is integer cents; `null` = unknown.
+
+## Reporting API (Marketing Dashboard, read-only)
+
+Its own credential (`Authorization: Bearer <CORPORATE_REPORTING_SECRET>`), separate from the Google login and the collector secret; rate limited (120 requests per hour per client). Revoke by removing the variable and redeploying: the routes then answer 503. Every secret must be different: a reporting or ingest secret equal to `SESSION_SECRET` turns sign-in off entirely (no session is accepted, not even a forged one), and an ingest secret equal to the reporting secret disables both.
+
+- `GET /api/reporting/v1/months?from=YYYY-MM&to=YYYY-MM&cursor=YYYY-MM&limit=1..24` — one record per month (`cg:month:YYYY-MM`) with a content `revision` that changes whenever a figure, channel or completeness changes; period and timezone (America/Los_Angeles); scope `channel:corporate`; completeness `complete`, `provisional` (month still running) or `partial` with reason codes (Shopify coverage, unclassified or conflicting orders, manual records needing review or incomplete); totals in cents (combined, Shopify, manual, fees where recorded), the number of manual entries included (a count, so entries that cancel out stay visible) and Shopify order and unit counts; a per-channel breakdown. Figures are the Revenue page's summary itself.
+- `GET /api/reporting/v1/pipeline` — marketplace counts by provider type and status.
+
+Never returned: orders or lines, customer, billing or company names, contact names or emails, notes, references, signer names, match rules, portal links or secrets.
 
 ## Pricing models, references and pricing file import
 

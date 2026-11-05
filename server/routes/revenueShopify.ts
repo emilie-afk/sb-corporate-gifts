@@ -359,7 +359,15 @@ export function revenueShopifyRoutes(r: Router) {
   });
 
   // ----------------------------------------------------------- summary
-  r.get("/revenue/summary", async ({ query: q }) => {
+  r.get("/revenue/summary", async ({ query: q }) => revenueSummary(q));
+}
+
+/**
+ * The channel × month revenue summary shown on the Revenue page. Also used, unchanged, by the read-only
+ * reporting API (server/reportingEndpoint.ts), so both always agree.
+ */
+export async function revenueSummary(q: URLSearchParams) {
+  {
     const params: unknown[] = [];
     const cond = (col: string) => {
       const w: string[] = [];
@@ -469,6 +477,6 @@ export function revenueShopifyRoutes(r: Router) {
       last_import_at: lastImport?.at ?? null,
       coverage: cov,
     };
-  });
+  }
 }
 
