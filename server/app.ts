@@ -11,6 +11,7 @@ import { importRoutes } from "./routes/imports";
 import { pricingImportRoutes } from "./routes/pricingImport";
 import { revenueShopifyRoutes } from "./routes/revenueShopify";
 import { handleIngest } from "./ingestEndpoint";
+import { handleReporting } from "./reportingEndpoint";
 import { readBounded } from "./body";
 
 const router = new Router();
@@ -53,6 +54,8 @@ export function createApp(opts: AppOptions = {}) {
 
       // ---- collector ingestion (own secret, no Google session)
       if (path === "/ingest/shopify-orders") return await handleIngest(req);
+      // ---- read-only reporting for the Marketing Dashboard (own secret, no Google session)
+      if (path.startsWith("/reporting/")) return await handleReporting(req, path);
 
       // ---- auth endpoints (public)
       if (path === "/auth/login" && req.method === "GET") return await loginRedirect(req);
