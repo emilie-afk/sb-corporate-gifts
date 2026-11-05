@@ -12,9 +12,18 @@ const STATE_COOKIE = "sbg_oauth";
 const SESSION_HOURS = 12;
 const GOOGLE_JWKS = createRemoteJWKSet(new URL("https://www.googleapis.com/oauth2/v3/certs"));
 
+/**
+ * Fail closed: the session signing key must differ from every bearer credential. Equal to the reporting or ingest
+ * secret, whoever holds that credential could sign their own session cookie, so sign-in is refused entirely.
+ */
+function sessionSecretCollides(s: string) {
+  return [process.env.CORPORATE_REPORTING_SECRET, process.env.CORPORATE_INGEST_SECRET].some((v) => !!v && v === s);
+}
+
 function secretKey() {
   const s = process.env.SESSION_SECRET;
   if (!s || s.length < 32) throw new HttpError(500, "misconfigured", "SESSION_SECRET is not configured (min 32 chars).");
+  if (sessionSecretCollides(s)) throw new HttpError(500, "misconfigured", "SESSION_SECRET must differ from every other secret.");
   return new TextEncoder().encode(s);
 }
 
@@ -36,7 +45,8 @@ export function isApproved(email: string) {
  * SESSION_NOT_BEFORE. A broken cutoff denies everything rather than silently disabling revocation.
  */
 export function authConfigured() {
-  return (process.env.SESSION_SECRET ?? "").length >= 32 && approvedEmails().size > 0 && notBefore() !== "invalid";
+  const s = process.env.SESSION_SECRET ?? "";
+  return s.length >= 32 && !sessionSecretCollides(s) && approvedEmails().size > 0 && notBefore() !== "invalid";
 }
 
 const ISO_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(Z|([+-])(\d{2}):(\d{2}))$/;
