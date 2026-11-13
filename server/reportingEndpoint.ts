@@ -1,3 +1,4 @@
+import { sampleSignupsReport } from "./lib/sampleSignups";
 // Read-only reporting API for the Marketing Dashboard's server. Protected by its own private secret
 // (CORPORATE_REPORTING_SECRET), never by the Google login, and separate from the collector's ingest secret.
 //
@@ -134,6 +135,7 @@ export async function handleReporting(req: Request, path: string): Promise<Respo
     if (!ok) return json({ error: { code: "unauthorized", message: "Invalid reporting credential." } }, 401);
     const url = new URL(req.url);
     if (path === "/reporting/v1/months") return json(await monthsReport(url.searchParams));
+    if (path === "/reporting/v1/sample-signups") return json(await sampleSignupsReport());
     if (path === "/reporting/v1/pipeline") {
       if ([...url.searchParams.keys()].length) throw new HttpError(400, "bad_query", "No parameters are accepted.");
       return json(await pipelineReport());

@@ -76,6 +76,7 @@ export function App() {
         </div>
       </header>
       <main>
+        {route.tab === "marketplaces" && <SampleSignups /> }
         {route.tab === "marketplaces" && <MarketplacesScreen params={route.params} nav={nav} />}
         {route.tab === "pricing" && <PricingScreen params={route.params} nav={nav} />}
         {route.tab === "revenue" && <RevenueScreen params={route.params} nav={nav} />}
@@ -83,4 +84,21 @@ export function App() {
       {manual && <Manual onClose={() => setManual(false)} />}
     </div>
   );
+}
+
+function SampleSignups() {
+  const [count, setCount] = useState<number | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let active = true;
+    get("/sample-signups")
+      .then((report: { count: number }) => { if (active) setCount(report.count); })
+      .catch(() => { if (active) setFailed(true); });
+    return () => { active = false; };
+  }, []);
+
+  return <section className="card" aria-label="Sample box signups">
+    <h2>Sample box signups</h2>
+    <p>{failed ? "Signup count unavailable." : count === null ? "Loading signup count…" : <><strong>{count.toLocaleString()}</strong> all-time</>}</p>
+  </section>;
 }
