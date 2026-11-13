@@ -1,3 +1,4 @@
+import { sampleSignupsReport } from "./lib/sampleSignups";
 import { Router, makeActor, type Ctx } from "./router";
 import { HttpError, json, errorResponse, badRequest } from "./http";
 import { readSession, loginRedirect, handleCallback, logoutResponse, authConfigured, type Session } from "./auth";
@@ -22,6 +23,7 @@ revenueRoutes(router);
 importRoutes(router);
 pricingImportRoutes(router);
 revenueShopifyRoutes(router);
+router.get("/sample-signups", async () => sampleSignupsReport());
 
 export type AppOptions = {
   /** LOCAL DEVELOPMENT ONLY — injected by scripts/dev-server.ts, never by the Netlify function. */
