@@ -67,6 +67,7 @@ APPROVED_GOOGLE_EMAILS=<login1>,<login2>                # Functions, secret
 APP_BASE_URL=https://<site>                             # per context
 CORPORATE_INGEST_SECRET=<64 random characters>          # Functions, secret (unset = ingestion off)
 SESSION_NOT_BEFORE=<YYYY-MM-DDTHH:MM:SSZ>               # optional kill switch; invalid value = deny all
+CORPORATE_SLACK_INGEST_SECRET=<64 random characters>    # Functions, secret (unset = Slack scanner off)
 BASELINE_DIRECT_DISCOUNT_PCT=<number>                   # optional, Builds; first creation only
 BASELINE_CORPORATE_MOQ=<number>                         # optional, Builds; first creation only
 GOOGLE_SERVICE_ACCOUNT_JSON=<json>                      # optional, only if the sheet becomes private

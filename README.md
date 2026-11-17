@@ -52,6 +52,7 @@ them between databases with the private export/import in `docs/SECURITY.md`.
 | `CORPORATE_REPORTING_SECRET` | Netlify (Functions), secret | ≥ 32 random chars, different from every other secret; bearer credential for the read-only `GET /api/reporting/v1/*` routes (Marketing Dashboard server). Unset = disabled |
 | `SAMPLE_SIGNUP_SHEET_ID` / `SAMPLE_SIGNUP_TAB` | Netlify (Functions), secret | Private corporate sample request (Google Form response) sheet and its response tab (default `Sheet1`). Only columns A (Timestamp) and B (First name) are used; only a count is returned |
 | `SHEET_READER_URL` / `SHEET_READER_KEY` | Netlify (Functions), secret | The team's Apps Script spreadsheet reader (shared with the Marketing Dashboard). The sample sheet id must be on its `ALLOWED_FILE_IDS` |
+| `CORPORATE_SLACK_INGEST_SECRET` | Netlify (Functions), secret | ≥ 32 random chars, different from every other secret; bearer credential for the Slack scanner (`/api/ingest/slack-*`). Unset = disabled. See `docs/SLACK_WORKFLOW.md` |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | optional, secret | Only if Product Master becomes private (see below) |
 | `SHOPIFY_CATALOG_ORIGIN` | optional | Defaults to `https://succulentsbox.com` |
 | `DB_POOL_MAX`, `DATABASE_SSL` | optional | Pool size; `false` disables TLS (local only) |
@@ -133,6 +134,7 @@ Its own credential (`Authorization: Bearer <CORPORATE_REPORTING_SECRET>`), separ
 
 - `GET /api/reporting/v1/months?from=YYYY-MM&to=YYYY-MM&cursor=YYYY-MM&limit=1..24` — one record per month (`cg:month:YYYY-MM`) with a content `revision` that changes whenever a figure, channel or completeness changes; period and timezone (America/Los_Angeles); scope `channel:corporate`; completeness `complete`, `provisional` (month still running) or `partial` with reason codes (Shopify coverage, unclassified or conflicting orders, manual records needing review or incomplete); totals in cents (combined, Shopify, manual, fees where recorded), the number of manual entries included (a count, so entries that cancel out stay visible) and Shopify order and unit counts; a per-channel breakdown. Figures are the Revenue page's summary itself.
 - `GET /api/reporting/v1/pipeline` — marketplace counts by provider type and status.
+- `GET /api/reporting/v1/corporate-workflow` — sample progress, open/overdue follow-ups, recent decisions and blockers (summary only; see `docs/SLACK_WORKFLOW.md`).
 - `GET /api/reporting/v1/sample-signups` — all-time corporate sample box signup count (`count`, `checked_at`). Rows with a valid form timestamp count once; blank rows and first name `TEST` (any case) are skipped. A read failure answers 502, never 0. Cached for 2 minutes. The Marketplaces page shows the same count (`GET /api/sample-signups`, signed in).
 
 Never returned: orders or lines, customer, billing or company names, contact names or emails, notes, references, signer names, match rules, portal links or secrets.

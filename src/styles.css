@@ -284,3 +284,16 @@ h3.subhead { margin: 8px 0 2px; }
 .manual-step ul, .manual-step ol { margin: 4px 0; padding-left: 20px; }
 .manual-step li { margin: 3px 0; }
 .manual-step p { margin: 4px 0; }
+
+/* ---------------------------------------------------------- Supplier Resources */
+.segmented { display: flex; gap: 4px; flex-wrap: wrap; }
+.split { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 16px; align-items: start; }
+.split-list { display: flex; flex-direction: column; gap: 8px; }
+.pick-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 70vh; overflow: auto; }
+.pick-list button { width: 100%; text-align: left; display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; background: none; border: 1px solid transparent; border-radius: var(--radius); padding: 6px 8px; cursor: pointer; font: inherit; }
+.pick-list button:hover { border-color: var(--line); }
+.pick-list button.active { border-color: var(--line); background: #fff; }
+.pick-list .count { margin-left: auto; }
+.history { margin-top: 8px; }
+.history summary { cursor: pointer; color: var(--muted, #666); }
+@media (max-width: 760px) { .split { grid-template-columns: 1fr; } .pick-list { max-height: 40vh; } }

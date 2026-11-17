@@ -139,7 +139,9 @@ export function marketplaceRoutes(r: Router) {
       ),
       one("select * from channels where id = $1", [m.channel_id]),
     ]);
-    return { marketplace: m, channel, milestones, requirements, communications, products, statusHistory, milestoneHistory: history };
+    // Number of current Supplier Resources for the "Resources" shortcut on this record.
+    const rc = await one("select count(*)::int as n from supplier_resources where marketplace_id = $1 and status = 'current' and removed_at is null", [m.id]);
+    return { marketplace: m, channel, milestones, requirements, communications, products, statusHistory, milestoneHistory: history, resource_count: rc?.n ?? 0 };
   });
 
   r.patch("/marketplaces/:id", async ({ params, body, actor }) => {

@@ -13,6 +13,7 @@
     "private:export": "tsx scripts/private-data.ts export",
     "private:import": "tsx scripts/private-data.ts import",
     "check:public": "tsx scripts/check-public-build.ts",
+    "slack:pass": "tsx scripts/slack-pass.ts",
     "test": "vitest run"
   },
   "dependencies": {

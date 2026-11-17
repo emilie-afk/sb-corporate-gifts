@@ -4,10 +4,11 @@ import { Loading } from "./components/ui";
 import { MarketplacesScreen } from "./screens/Marketplaces";
 import { PricingScreen } from "./screens/Pricing";
 import { RevenueScreen } from "./screens/Revenue";
+import { SupplierResourcesScreen } from "./screens/SupplierResources";
 import { Manual } from "./screens/Manual";
 
-type Tab = "marketplaces" | "pricing" | "revenue";
-const TABS: [Tab, string][] = [["marketplaces", "Marketplaces"], ["pricing", "Pricing"], ["revenue", "Revenue"]];
+type Tab = "marketplaces" | "resources" | "pricing" | "revenue";
+const TABS: [Tab, string][] = [["marketplaces", "Marketplaces"], ["resources", "Supplier Resources"], ["pricing", "Pricing"], ["revenue", "Revenue"]];
 
 export type Nav = (tab: Tab, params?: Record<string, string>) => void;
 
@@ -77,6 +78,7 @@ export function App() {
       </header>
       <main>
         {route.tab === "marketplaces" && <MarketplacesScreen params={route.params} nav={nav} />}
+        {route.tab === "resources" && <SupplierResourcesScreen params={route.params} nav={nav} />}
         {route.tab === "pricing" && <PricingScreen params={route.params} nav={nav} />}
         {route.tab === "revenue" && <RevenueScreen params={route.params} nav={nav} />}
       </main>

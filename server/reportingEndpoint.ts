@@ -8,6 +8,9 @@
 //       Marketplace counts by status and provider type, as of now.
 //   GET /api/reporting/v1/sample-signups
 //       All-time count of corporate sample box signups (count only; the signup rows stay in Google Sheets).
+//   GET /api/reporting/v1/corporate-workflow
+//       Sample box progress (tracked requests by latest status), open and overdue follow-ups, and up to 8 recent
+//       decisions and blockers as one-line summaries. No supplier files, quotes, terms, contacts or Slack messages.
 //
 // Returned: stable record ids, a content revision, the reporting month and timezone, the scope, completeness with
 // reason codes, and amounts in cents. Never returned: orders, order lines, customer or billing names, contact
@@ -29,7 +32,7 @@ function credential(header: string | null) {
   const secret = process.env.CORPORATE_REPORTING_SECRET ?? "";
   if (secret.length < 32) return "disabled" as const;
   // Separate from every other credential: equal to one of them counts as not configured.
-  if ([process.env.CORPORATE_INGEST_SECRET, process.env.SESSION_SECRET, process.env.GOOGLE_CLIENT_SECRET].includes(secret)) return "disabled" as const;
+  if ([process.env.CORPORATE_INGEST_SECRET, process.env.CORPORATE_SLACK_INGEST_SECRET, process.env.SESSION_SECRET, process.env.GOOGLE_CLIENT_SECRET].includes(secret)) return "disabled" as const;
   const m = /^Bearer (.+)$/.exec(header ?? "");
   if (!m) return false;
   const a = createHash("sha256").update(m[1]).digest(), b = createHash("sha256").update(secret).digest();
@@ -127,6 +130,37 @@ export async function pipelineReport() {
   return { ok: true, schema_version: 1, source: "sb-corporate-gifts", id: "cg:pipeline", as_of: last?.at ?? null, counts: rows };
 }
 
+/**
+ * Counting rules (also shown on the dashboard):
+ *  - sample progress: each tracked sample request once, under its latest confirmed status;
+ *  - follow-ups: open actions (kind "action"); overdue = open with an explicit due date before today (Los Angeles);
+ *  - recent: decisions and blockers created or changed in the last 30 days, newest first, title only (max 120 chars).
+ * Google Form signups are a separate count (sample-signups) and are never changed by this data.
+ */
+export async function workflowReport(now = new Date()) {
+  const today = businessToday(now);
+  const samples = await query(`select status, count(*)::int as n from sample_requests group by status`);
+  const by: Record<string, number> = { requested: 0, approved: 0, shipped: 0, delivered: 0, cancelled: 0 };
+  for (const r of samples) by[r.status] = r.n;
+  const fu = await one(
+    `select count(*) filter (where status = 'open')::int as open,
+            count(*) filter (where status = 'open' and due_date is not null and due_date < $1::date)::int as overdue
+     from corporate_actions where kind = 'action'`, [today]);
+  const recent = await query(
+    `select a.id, a.kind, left(a.title, 120) as title, greatest(a.created_at, a.updated_at) as at, a.status,
+            coalesce(m.name, v.name) as supplier_name
+     from corporate_actions a left join marketplaces m on m.id = a.marketplace_id left join vendors v on v.id = a.vendor_id
+     where a.kind in ('decision', 'blocker') and greatest(a.created_at, a.updated_at) >= $1::timestamptz - interval '30 days'
+     order by at desc limit 8`, [now.toISOString()]);
+  const last = await one(`select max(t) as at from (select max(updated_at) as t from sample_requests union all select max(updated_at) from corporate_actions) x`);
+  return {
+    ok: true, schema_version: 1, source: "sb-corporate-gifts", id: "cg:corporate-workflow", as_of: last?.at ?? null, today,
+    sample_progress: { tracked: Object.values(by).reduce((a, b) => a + b, 0), by_status: by },
+    follow_ups: { open: fu?.open ?? 0, overdue: fu?.overdue ?? 0 },
+    recent: recent.map((r: any) => ({ id: `cg:action:${r.id}`, kind: r.kind, title: r.title, supplier: r.supplier_name ?? null, at: r.at, status: r.status })),
+  };
+}
+
 export async function handleReporting(req: Request, path: string): Promise<Response> {
   try {
     if (req.method !== "GET") return json({ error: { code: "method_not_allowed", message: "GET only" } }, 405);
@@ -140,6 +174,10 @@ export async function handleReporting(req: Request, path: string): Promise<Respo
     if (path === "/reporting/v1/sample-signups") {
       if ([...url.searchParams.keys()].length) throw new HttpError(400, "bad_query", "No parameters are accepted.");
       return json(await sampleSignupsReport());
+    }
+    if (path === "/reporting/v1/corporate-workflow") {
+      if ([...url.searchParams.keys()].length) throw new HttpError(400, "bad_query", "No parameters are accepted.");
+      return json(await workflowReport());
     }
     if (path === "/reporting/v1/pipeline") {
       if ([...url.searchParams.keys()].length) throw new HttpError(400, "bad_query", "No parameters are accepted.");
