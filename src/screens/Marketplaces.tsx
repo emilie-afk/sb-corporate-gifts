@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { SampleSignups } from "../components/SampleSignups";
 import { get, post, patch, qs } from "../api";
 import type { Nav } from "../App";
 import {
@@ -33,6 +34,7 @@ export function MarketplacesScreen({ params, nav }: { params: Record<string, str
       <div className="toolbar">
         <h1>Marketplaces</h1>
         {list.data && <span className="hint">{list.data.counts.working} working · {list.data.counts.live} live</span>}
+        <SampleSignups />
         <div className="spacer" />
         <button className="btn" onClick={() => setBulk(true)}>Add in bulk</button>
         <button className="btn primary" onClick={() => setAdding(true)}>Add marketplace</button>

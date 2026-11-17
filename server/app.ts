@@ -12,6 +12,7 @@ import { pricingImportRoutes } from "./routes/pricingImport";
 import { revenueShopifyRoutes } from "./routes/revenueShopify";
 import { handleIngest } from "./ingestEndpoint";
 import { handleReporting } from "./reportingEndpoint";
+import { sampleSignupsReport } from "./lib/sampleSignups";
 import { readBounded } from "./body";
 
 const router = new Router();
@@ -22,6 +23,8 @@ revenueRoutes(router);
 importRoutes(router);
 pricingImportRoutes(router);
 revenueShopifyRoutes(router);
+// All-time sample box signup count for the Marketplaces page (count only).
+router.get("/sample-signups", async () => sampleSignupsReport());
 
 export type AppOptions = {
   /** LOCAL DEVELOPMENT ONLY — injected by scripts/dev-server.ts, never by the Netlify function. */
