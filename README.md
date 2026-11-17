@@ -1,7 +1,5 @@
 # SB Corporate Gifting
 
-**Designed and built by Emilie Ngo for Succulents Box.**
-
 An internal workspace for managing corporate gifting sales partners, comparing pricing models, and reviewing corporate order revenue.
 
 ## Features
@@ -13,3 +11,5 @@ An internal workspace for managing corporate gifting sales partners, comparing p
 ## Tech stack
 
 React, TypeScript, Netlify Functions, and PostgreSQL.
+
+Designed and built by Emilie Ngo for Succulents Box.
