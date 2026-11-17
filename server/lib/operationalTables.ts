@@ -8,6 +8,7 @@ export const OPERATIONAL_TABLES = [
   "pricing_import_batches", "pricing_records", "monthly_revenue", "match_rules",
   "shopify_import_runs", "shopify_orders", "revenue_adjustments",
   "vendors", "corporate_actions", "supplier_resources", "sample_requests", "review_items", "slack_findings", "slack_messages",
+  "corporate_task_requests",
   "audit_events",
 ] as const;
 

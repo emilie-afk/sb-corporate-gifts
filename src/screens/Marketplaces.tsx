@@ -9,6 +9,7 @@ import {
 import { ProductPicker, type ProductLite } from "../components/ProductPicker";
 import { BulkAddMarketplaces } from "./BulkAddMarketplaces";
 import { BulkProposeProducts, BulkRequirements } from "./MarketplaceBulk";
+import { APPLICATION_LABEL } from "./SupplierResources";
 import {
   STATUS_LABEL, STATUSES, INACTIVE, REASON_LABEL, PROVIDER_LABEL, SUPPLIER_HELP, CATEGORY_LABEL, CONFIRM_LABEL, METHOD_LABEL,
   PROPOSAL_LABEL, OFFER_LABEL, FAMILY_LABEL, TRI_LABEL, date, dateTime, today, productLabel, pct,
@@ -84,6 +85,9 @@ function MarketplaceForm({ existing, onClose, onSaved }: { existing?: any; onClo
     contact_name: existing?.contact_name ?? "", contact_email: existing?.contact_email ?? "", website_url: existing?.website_url ?? "",
     portal_url: existing?.portal_url ?? "", description: existing?.description ?? "", priority_note: existing?.priority_note ?? "",
     initial_action: existing?.initial_action ?? "",
+    sales_role: existing?.sales_role ?? "confirmed", aliases: (existing?.aliases ?? []).join(", "),
+    application_status: existing?.application_status ?? "",
+    application_date: existing?.application_date ? String(existing.application_date).slice(0, 10) : "",
   });
   const [signer, setSigner] = useSigner();
   const s = useSave();
@@ -92,9 +96,17 @@ function MarketplaceForm({ existing, onClose, onSaved }: { existing?: any; onClo
     e.preventDefault();
     let id = existing?.id;
     const ok = await s.run(async () => {
-      const { status, ...rest } = f;
-      if (existing) await patch(`/marketplaces/${existing.id}`, { ...rest, signer_name: signer, version: existing.version });
-      else id = (await post("/marketplaces", { ...f, signer_name: signer })).marketplace.id;
+      const { status, sales_role, aliases, application_status, application_date, ...rest } = f;
+      // Application fields are sent only when they changed (each change records when it was confirmed).
+      const appChanged = existing && (application_status !== (existing.application_status ?? "") || application_date !== (existing.application_date ? String(existing.application_date).slice(0, 10) : ""));
+      const extra = {
+        sales_role, aliases: (aliases as string).split(",").map((x: string) => x.trim()).filter(Boolean),
+        ...(appChanged ? { application_status: application_status || null, application_date: application_date || null } : {}),
+      };
+      if (existing) await patch(`/marketplaces/${existing.id}`, { ...rest, ...extra, signer_name: signer, version: existing.version });
+      else {
+        id = (await post("/marketplaces", { ...rest, status, signer_name: signer })).marketplace.id;
+      }
     });
     if (ok) { rememberSigner(signer); onSaved(id); }
   };
@@ -109,6 +121,18 @@ function MarketplaceForm({ existing, onClose, onSaved }: { existing?: any; onClo
         {!existing && (
           <Field label="Initial status"><Select value={f.status} onChange={set("status")} options={STATUSES.filter((x) => !INACTIVE.includes(x)).map((x) => [x, STATUS_LABEL[x]])} /></Field>
         )}
+        {existing && <>
+          <Field label="Sells our corporate gifts" hint="Unclear keeps this record out of the Slack scan until confirmed.">
+            <Select value={f.sales_role} onChange={set("sales_role")} options={{ confirmed: "Confirmed", unclear: "Unclear" }} />
+          </Field>
+          <Field label="Other names (verified)" error={s.fe("aliases")} hint="Comma-separated names Slack messages use for this marketplace.">
+            <input value={f.aliases} onChange={set("aliases")} />
+          </Field>
+          <Field label="Application status" hint="Separate from the relationship status.">
+            <Select value={f.application_status} onChange={set("application_status")} options={APPLICATION_LABEL} empty="Not recorded" />
+          </Field>
+          <Field label="Application date" error={s.fe("application_date")} hint="Leave blank if unknown."><input type="date" value={f.application_date} onChange={set("application_date")} /></Field>
+        </>}
         <Field label="Contact name" error={s.fe("contact_name")}><input value={f.contact_name} onChange={set("contact_name")} /></Field>
         <Field label="Contact email" error={s.fe("contact_email")}><input type="email" value={f.contact_email} onChange={set("contact_email")} /></Field>
         <Field label="Official website" error={s.fe("website_url")}><input type="url" value={f.website_url} onChange={set("website_url")} placeholder="https://" /></Field>
@@ -181,11 +205,14 @@ function MarketplaceDetail({ id, nav, onClose, onChanged }: { id: string; nav: N
           <div className="detail-actions">
             <button className="btn small" onClick={() => setModal("edit")}>Edit details</button>
             <button className="btn small" onClick={() => setModal("status")}>{INACTIVE.includes(m.status) ? "Reactivate" : "Change status"}</button>
-            <button className="btn small" onClick={() => nav("resources", { view: "suppliers", supplier: `partner:${m.id}` })}>Resources{d.data.resource_count ? ` (${d.data.resource_count})` : ""}</button>
+            {m.sales_role === "confirmed" && <button className="btn small" onClick={() => nav("resources", { view: "suppliers", supplier: `partner:${m.id}` })}>Resources{d.data.resource_count ? ` (${d.data.resource_count})` : ""}</button>}
             <button className="btn ghost small" onClick={() => nav("pricing", { channel: m.channel_id })}>Pricing for {m.name} →</button>
             <button className="btn ghost small" onClick={() => nav("revenue", { channel: m.channel_id })}>Revenue for {m.name} →</button>
           </div>
           <dl className="kv">
+            <dt>Application</dt><dd>{m.application_status ? APPLICATION_LABEL[m.application_status] : <span className="unknown">Not recorded</span>}{m.application_date && ` · ${String(m.application_date).slice(0, 10)}`}</dd>
+            {m.sales_role === "unclear" && <><dt>Sales role</dt><dd>Unclear: not included in the Slack scan until confirmed</dd></>}
+            {m.aliases?.length > 0 && <><dt>Other names</dt><dd>{m.aliases.join(", ")}</dd></>}
             <dt>Contact</dt><dd>{m.contact_name || <span className="unknown">Not recorded</span>}{m.contact_email && <> · <a href={`mailto:${m.contact_email}`}>{m.contact_email}</a></>}</dd>
             <dt>Website</dt><dd>{m.website_url ? <a href={m.website_url} target="_blank" rel="noreferrer noopener">{m.website_url}</a> : "—"}</dd>
             <dt>Vendor portal</dt><dd>{m.portal_url ? <a href={m.portal_url} target="_blank" rel="noreferrer noopener">{m.portal_url}</a> : "—"}</dd>

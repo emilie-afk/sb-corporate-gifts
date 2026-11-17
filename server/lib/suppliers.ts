@@ -1,4 +1,4 @@
-// Shared rules for Supplier Resources and the Slack workflow.
+// Shared rules for Marketplace Resources and the Slack workflow (partner refs, resource types, eligibility).
 // A supplier is either an existing partner record (marketplaces table, any provider type) or a product vendor
 // (vendors table). Both are referenced by their existing ID: "partner:<uuid>" or "vendor:<uuid>".
 import type { Db } from "../db";
@@ -79,3 +79,32 @@ export async function matchSupplier(db: Db, names: string[], kind?: "partner" | 
 /** Today's date in Los Angeles (the business calendar), for "overdue". */
 export const businessToday = (now = new Date()) =>
   new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+
+// ------------------------------------------------------------ Marketplace Resources eligibility
+// A Slack finding may only touch a Marketplaces record that sells (or is being pursued to sell) our corporate gifts:
+// sales_role = 'confirmed'. Product vendors are never matched. A name matches when, after normalising (nameKey), it
+// equals the record's name, one part of an "A / B" name, or one of its verified aliases. Zero or several matches, or
+// an unclear sales role, means the finding is skipped: a Slack mention never creates or guesses a partner.
+export type EligibleMatch =
+  | { ok: true; id: string; name: string }
+  | { ok: false; reason: "not_listed" | "role_unclear" | "several_matches" };
+
+const recordKeys = (name: string, aliases: string[] = []) =>
+  [...new Set([nameKey(name), ...name.split("/").map(nameKey), ...aliases.map(nameKey)].filter(Boolean))];
+
+export async function matchEligiblePartner(db: Db, ref: { id?: string; names?: string[] }): Promise<EligibleMatch> {
+  if (ref.id) {
+    const m = (await db.query("select id, name, sales_role from marketplaces where id = $1", [ref.id])).rows[0];
+    if (!m) return { ok: false, reason: "not_listed" };
+    if (m.sales_role !== "confirmed") return { ok: false, reason: "role_unclear" };
+    return { ok: true, id: m.id, name: m.name };
+  }
+  const keys = [...new Set((ref.names ?? []).map(nameKey).filter(Boolean))];
+  if (!keys.length) return { ok: false, reason: "not_listed" };
+  const rows = (await db.query("select id, name, sales_role, aliases from marketplaces")).rows;
+  const hits = rows.filter((r: any) => recordKeys(r.name, r.aliases).some((k) => keys.includes(k)));
+  if (hits.length === 0) return { ok: false, reason: "not_listed" };
+  if (hits.length > 1) return { ok: false, reason: "several_matches" };
+  if (hits[0].sales_role !== "confirmed") return { ok: false, reason: "role_unclear" };
+  return { ok: true, id: hits[0].id, name: hits[0].name };
+}

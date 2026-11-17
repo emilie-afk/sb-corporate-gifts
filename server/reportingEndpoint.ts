@@ -1,4 +1,4 @@
-// Read-only reporting API for the Marketing Dashboard's server. Protected by its own private secret
+// Reporting API for the Marketing Dashboard's server (read-only except delivery receipts for Corporate Gifts tasks). Protected by its own private secret
 // (CORPORATE_REPORTING_SECRET), never by the Google login, and separate from the collector's ingest secret.
 //
 //   GET /api/reporting/v1/months?from=YYYY-MM&to=YYYY-MM&cursor=YYYY-MM&limit=1..24
@@ -11,6 +11,12 @@
 //   GET /api/reporting/v1/corporate-workflow
 //       Sample box progress (tracked requests by latest status), open and overdue follow-ups, and up to 8 recent
 //       decisions and blockers as one-line summaries. No supplier files, quotes, terms, contacts or Slack messages.
+//   GET /api/reporting/v1/corporate-tasks[?since=<ISO time>]
+//       Corporate Gifts task requests the dashboard must deliver to Task Tracker (or update there): title, brief,
+//       owner hint, due date, partner names with their Corporate Gifts links. Never Slack links or terms.
+//   POST /api/reporting/v1/corporate-task-receipts
+//       The only write on this connection: the dashboard reports what happened to each request (in review,
+//       delivered with the Task Tracker task id, failed, dismissed). Nothing else can be changed through it.
 //
 // Returned: stable record ids, a content revision, the reporting month and timezone, the scope, completeness with
 // reason codes, and amounts in cents. Never returned: orders, order lines, customer or billing names, contact
@@ -22,6 +28,10 @@ import { hit, clientKey } from "./rateLimit";
 import { query, one } from "./db";
 import { revenueSummary } from "./routes/revenueShopify";
 import { sampleSignupsReport } from "./lib/sampleSignups";
+import { tx } from "./db";
+import { audit } from "./audit";
+import { readBounded } from "./body";
+import { z } from "zod";
 
 export const REPORTING_TIMEZONE = "America/Los_Angeles";
 export const MONTHS_PAGE_MAX = 24;
@@ -142,34 +152,142 @@ export async function workflowReport(now = new Date()) {
   const samples = await query(`select status, count(*)::int as n from sample_requests group by status`);
   const by: Record<string, number> = { requested: 0, approved: 0, shipped: 0, delivered: 0, cancelled: 0 };
   for (const r of samples) by[r.status] = r.n;
+  // Open work = open Corporate Gifts tasks (requests not dismissed and not completed in Task Tracker) + open manual
+  // actions. Overdue = open with an explicit due date (Task Tracker's, once delivered) before today (Los Angeles).
   const fu = await one(
-    `select count(*) filter (where status = 'open')::int as open,
-            count(*) filter (where status = 'open' and due_date is not null and due_date < $1::date)::int as overdue
-     from corporate_actions where kind = 'action'`, [today]);
+    `select (select count(*) from corporate_actions where kind = 'action' and status = 'open' and excluded_at is null)
+            + (select count(*) from corporate_task_requests where slack_status = 'open' and delivery_status <> 'dismissed' and coalesce(tracker_status, 'open') = 'open') as open,
+            (select count(*) from corporate_actions where kind = 'action' and status = 'open' and excluded_at is null and due_date < $1::date)
+            + (select count(*) from corporate_task_requests where slack_status = 'open' and delivery_status <> 'dismissed' and coalesce(tracker_status, 'open') = 'open'
+                 and coalesce(tracker_due_date, due_date) < $1::date) as overdue`, [today]);
   const recent = await query(
-    `select a.id, a.kind, left(a.title, 120) as title, greatest(a.created_at, a.updated_at) as at, a.status,
-            coalesce(m.name, v.name) as supplier_name
-     from corporate_actions a left join marketplaces m on m.id = a.marketplace_id left join vendors v on v.id = a.vendor_id
-     where a.kind in ('decision', 'blocker') and greatest(a.created_at, a.updated_at) >= $1::timestamptz - interval '30 days'
-     order by at desc limit 8`, [now.toISOString()]);
-  const last = await one(`select max(t) as at from (select max(updated_at) as t from sample_requests union all select max(updated_at) from corporate_actions) x`);
+    `select * from (
+       select 'action:' || a.id as rid, a.kind, left(a.title, 120) as title, greatest(a.created_at, a.updated_at) as at, a.status, m.name as supplier_name
+       from corporate_actions a left join marketplaces m on m.id = a.marketplace_id
+       where a.kind in ('decision', 'blocker') and a.excluded_at is null
+       union all
+       select 'resource:' || r.id, 'decision', left(r.title, 120), greatest(r.created_at, r.updated_at), 'done', m.name
+       from supplier_resources r join marketplaces m on m.id = r.marketplace_id
+       where r.resource_type = 'decision' and r.removed_at is null and r.excluded_at is null and r.status = 'current'
+     ) x where at >= $1::timestamptz - interval '30 days' order by at desc limit 8`, [now.toISOString()]);
+  const last = await one(`select max(t) as at from (select max(updated_at) as t from sample_requests union all select max(updated_at) from corporate_actions
+    union all select max(updated_at) from corporate_task_requests union all select max(updated_at) from supplier_resources) x`);
   return {
     ok: true, schema_version: 1, source: "sb-corporate-gifts", id: "cg:corporate-workflow", as_of: last?.at ?? null, today,
     sample_progress: { tracked: Object.values(by).reduce((a, b) => a + b, 0), by_status: by },
-    follow_ups: { open: fu?.open ?? 0, overdue: fu?.overdue ?? 0 },
-    recent: recent.map((r: any) => ({ id: `cg:action:${r.id}`, kind: r.kind, title: r.title, supplier: r.supplier_name ?? null, at: r.at, status: r.status })),
+    follow_ups: { open: Number(fu?.open ?? 0), overdue: Number(fu?.overdue ?? 0) },
+    recent: recent.map((r: any) => ({ id: `cg:${r.rid}`, kind: r.kind, title: r.title, supplier: r.supplier_name ?? null, at: r.at, status: r.status })),
   };
+}
+
+// ------------------------------------------------------------- Corporate Gifts tasks
+const appUrl = () => (process.env.APP_BASE_URL ?? "https://sb-corporate-gifts.netlify.app").replace(/\/$/, "");
+
+/** Requests the dashboard still has to deliver or update, plus anything changed since `since` (to drop drafts). */
+export async function corporateTasksReport(params: URLSearchParams) {
+  const keys = [...params.keys()];
+  if (keys.some((k) => k !== "since")) throw new HttpError(400, "bad_query", "Only since is accepted.");
+  const sinceRaw = params.get("since");
+  const since = sinceRaw ? new Date(sinceRaw) : null;
+  if (sinceRaw && (Number.isNaN(since!.getTime()) || sinceRaw.length > 40)) throw new HttpError(400, "bad_query", "since must be an ISO time.");
+  const rows = await query(
+    `select t.id, t.title, t.brief, t.owner_hint, t.due_date, t.slack_status, t.content_version, t.delivery_status, t.delivered_version,
+            t.tracker_task_id, t.updated_at,
+            (select json_agg(json_build_object('id', m.id, 'name', m.name) order by m.name) from marketplaces m where m.id = any(t.marketplace_ids)) as partners
+     from corporate_task_requests t
+     where t.delivery_status in ('pending', 'in_review', 'failed')
+        or (t.delivery_status = 'delivered' and t.content_version > coalesce(t.delivered_version, 0))
+        or ($1::timestamptz is not null and t.updated_at > $1::timestamptz)
+     order by t.updated_at limit 200`, [since]);
+  const as_of = (await one("select now() as at"))!.at;
+  return {
+    ok: true, schema_version: 1, source: "sb-corporate-gifts", id: "cg:corporate-tasks", as_of,
+    tasks: rows.map((r: any) => ({
+      id: r.id, title: r.title, brief: r.brief, owner_hint: r.owner_hint,
+      due_date: r.due_date ? new Date(r.due_date).toISOString().slice(0, 10) : null,
+      slack_status: r.slack_status, content_version: r.content_version, delivery_status: r.delivery_status,
+      delivered_version: r.delivered_version, tracker_task_id: r.tracker_task_id, updated_at: r.updated_at,
+      partners: (r.partners ?? []).map((p: any) => ({ name: p.name, url: `${appUrl()}/?tab=marketplaces&m=${p.id}` })),
+    })),
+  };
+}
+
+const receiptSchema = z.object({
+  receipts: z.array(z.object({
+    id: z.string().uuid(),
+    content_version: z.number().int().min(1),
+    state: z.enum(["in_review", "delivered", "failed", "dismissed"]),
+    tracker: z.object({
+      task_id: z.string().min(1).max(80),
+      status: z.enum(["open", "done", "deleted"]),
+      assignee: z.string().max(120).nullable().optional(),
+      due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+      // https only (http is accepted for a local Task Tracker during development).
+      open_url: z.string().url().max(500).refine((u) => u.startsWith("https://") || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(u), "https only").nullable().optional(),
+    }).strict().optional(),
+    error: z.string().max(500).optional(),
+  }).strict()).min(1).max(100),
+}).strict();
+
+const DASHBOARD = { signer: "Marketing Dashboard", sub: null };
+
+/** Applies delivery receipts. "delivered" requires Task Tracker's task id; a delivered request is never downgraded. */
+export async function applyTaskReceipts(input: unknown) {
+  const r = receiptSchema.safeParse(input);
+  if (!r.success) throw new HttpError(400, "payload_rejected", r.error.issues.slice(0, 5).map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
+  const out = { applied: 0, ignored: 0, unknown: 0 };
+  await tx(async (c) => {
+    for (const x of r.data.receipts) {
+      const row = (await c.query("select * from corporate_task_requests where id = $1 for update", [x.id])).rows[0];
+      if (!row) { out.unknown++; continue; }
+      if (x.state === "delivered") {
+        if (!x.tracker) throw new HttpError(400, "payload_rejected", `receipts: ${x.id} delivered without a Task Tracker task`);
+        const version = Math.min(x.content_version, row.content_version);
+        await c.query(
+          `update corporate_task_requests set delivery_status = 'delivered', delivery_error = null, delivered_version = greatest(coalesce(delivered_version, 0), $2),
+             tracker_task_id = $3, tracker_status = $4, tracker_assignee = $5, tracker_due_date = $6, tracker_open_url = $7,
+             delivered_at = coalesce(delivered_at, now()), receipt_at = now(), updated_at = now() where id = $1`,
+          [x.id, version, x.tracker.task_id, x.tracker.status, x.tracker.assignee ?? null, x.tracker.due_date ?? null, x.tracker.open_url ?? null]);
+        if (row.delivery_status !== "delivered" || row.tracker_status !== x.tracker.status) {
+          await audit(c, DASHBOARD, { entityType: "corporate_task_request", entityId: x.id, action: "delivery_receipt",
+            before: { delivery_status: row.delivery_status, tracker_status: row.tracker_status }, after: { delivery_status: "delivered", tracker_task_id: x.tracker.task_id, tracker_status: x.tracker.status } });
+        }
+        out.applied++;
+        continue;
+      }
+      // Not delivered (yet): never overrides a delivered request; a dismissal here is final.
+      if (row.delivery_status === "delivered" || row.delivery_status === "dismissed") { out.ignored++; continue; }
+      if (x.state === "in_review" && row.delivery_status !== "pending") { out.ignored++; continue; }
+      await c.query(`update corporate_task_requests set delivery_status = $2, delivery_error = $3, receipt_at = now(), updated_at = now() where id = $1`,
+        [x.id, x.state, x.state === "failed" ? (x.error ?? "Delivery failed.") : null]);
+      await audit(c, DASHBOARD, { entityType: "corporate_task_request", entityId: x.id, action: "delivery_receipt", before: { delivery_status: row.delivery_status }, after: { delivery_status: x.state, error: x.error ?? null } });
+      out.applied++;
+    }
+  });
+  return { ok: true, ...out };
 }
 
 export async function handleReporting(req: Request, path: string): Promise<Response> {
   try {
-    if (req.method !== "GET") return json({ error: { code: "method_not_allowed", message: "GET only" } }, 405);
+    const receipts = path === "/reporting/v1/corporate-task-receipts";
+    if (req.method !== (receipts ? "POST" : "GET")) return json({ error: { code: "method_not_allowed", message: receipts ? "POST only" : "GET only" } }, 405);
     const ok = credential(req.headers.get("authorization"));
     if (ok === "disabled") return json({ error: { code: "reporting_disabled", message: "Reporting is not configured." } }, 503);
     // Counted before the credential check, so guessing the secret is limited too.
     await hit({ bucket: `reporting:${clientKey(req)}`, ...LIMIT });
     if (!ok) return json({ error: { code: "unauthorized", message: "Invalid reporting credential." } }, 401);
     const url = new URL(req.url);
+    if (receipts) {
+      if ([...url.searchParams.keys()].length) throw new HttpError(400, "bad_query", "No parameters are accepted.");
+      if (!/^application\/json\b/i.test(req.headers.get("content-type") ?? "")) return json({ error: { code: "unsupported_media_type", message: "Send application/json." } }, 415);
+      let body: unknown;
+      try { body = JSON.parse(await readBounded(req, 256 * 1024)); } catch (e: any) {
+        if (e?.status === 413) return json({ error: { code: "too_large", message: "Payload too large." } }, 413);
+        return json({ error: { code: "invalid_json", message: "Body is not JSON." } }, 400);
+      }
+      return json(await applyTaskReceipts(body));
+    }
+    if (path === "/reporting/v1/corporate-tasks") return json(await corporateTasksReport(url.searchParams));
     if (path === "/reporting/v1/months") return json(await monthsReport(url.searchParams));
     if (path === "/reporting/v1/sample-signups") {
       if ([...url.searchParams.keys()].length) throw new HttpError(400, "bad_query", "No parameters are accepted.");

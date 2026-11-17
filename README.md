@@ -52,7 +52,7 @@ them between databases with the private export/import in `docs/SECURITY.md`.
 | `CORPORATE_REPORTING_SECRET` | Netlify (Functions), secret | ≥ 32 random chars, different from every other secret; bearer credential for the read-only `GET /api/reporting/v1/*` routes (Marketing Dashboard server). Unset = disabled |
 | `SAMPLE_SIGNUP_SHEET_ID` / `SAMPLE_SIGNUP_TAB` | Netlify (Functions), secret | Private corporate sample request (Google Form response) sheet and its response tab (default `Sheet1`). Only columns A (Timestamp) and B (First name) are used; only a count is returned |
 | `SHEET_READER_URL` / `SHEET_READER_KEY` | Netlify (Functions), secret | The team's Apps Script spreadsheet reader (shared with the Marketing Dashboard). The sample sheet id must be on its `ALLOWED_FILE_IDS` |
-| `CORPORATE_SLACK_INGEST_SECRET` | Netlify (Functions), secret | ≥ 32 random chars, different from every other secret; optional bearer credential for the Slack scanner (`/api/ingest/slack-*`). Unset = disabled; signed-in users can still import scans in Supplier Resources → Slack scans. See `docs/SLACK_WORKFLOW.md` |
+| `CORPORATE_SLACK_INGEST_SECRET` | Netlify (Functions), secret | ≥ 32 random chars, different from every other secret; optional bearer credential for the Slack scanner (`/api/ingest/slack-*`). Unset = disabled; signed-in users can still import scans in Marketplace Resources → Slack scans. See `docs/SLACK_WORKFLOW.md` |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | optional, secret | Only if Product Master becomes private (see below) |
 | `SHOPIFY_CATALOG_ORIGIN` | optional | Defaults to `https://succulentsbox.com` |
 | `DB_POOL_MAX`, `DATABASE_SSL` | optional | Pool size; `false` disables TLS (local only) |

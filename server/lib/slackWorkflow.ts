@@ -1,27 +1,33 @@
-// Slack-to-Corporate Gifts workflow: applies one scan pass of one channel (#seo or #teammarketing).
+// Slack-to-Corporate Gifts workflow (format sbcg-slack-v2): applies one scan pass of one channel (#seo or #teammarketing).
 //
-// The scanner (a scheduled task that reads Slack) classifies messages into findings and posts them here with the
-// messages it examined and the newest ts it covered. This module matches each finding to existing records before
-// creating anything, applies it, and records everything in ONE transaction:
-//   - every finding has a stable event key; the same key from a retry, an edited message or the other channel
-//     updates the same record (its supporting messages are merged), never a new one;
-//   - tentative, conflicting or ambiguous findings, and findings whose supplier or target cannot be matched to
-//     exactly one record, go to the review queue with their sources and the question to resolve;
-//   - the channel's scan position advances only when the pass is saved; a failed pass changes nothing except the
-//     channel's last attempt and error (its last successful scan time is kept).
-// Facts, source links and supplier terms are stored only in this private database.
+// Scope: only Marketplaces records that sell, or are being pursued to sell, our corporate gifts (sales role
+// confirmed). Product-supplier discussion, companies outside Marketplaces and general discussion are skipped before
+// anything is written; a Slack mention never creates a partner. The same eligibility check runs here for every
+// route (app import and the optional script route), not only in the scanner.
+//
+// Each finding becomes exactly one of:
+//   - status   → the partner's relationship status and/or application status/date (latest confirmed evidence wins);
+//   - resource → a fact, document, term or decision under the partner's Resources (with source link and date);
+//   - task     → a Corporate Gifts task request for one partner or a named group of partners; the Marketing
+//                Dashboard delivers it to Task Tracker (Marketing Tasks) and reports back;
+//   - conflict → a review item, only when competing values block one specific field change.
+// Everything is applied in ONE transaction. Stable keys make a rescan, an edit or the other channel update the same
+// record; older evidence read later never overwrites newer evidence. The channel's scan position advances only when
+// the pass is saved. A preview (dry run) computes the same changes and rolls back.
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type pg from "pg";
 import { tx, getPool } from "../db";
 import { audit, type Actor } from "../audit";
 import { HttpError } from "../http";
-import { STATUSES, INACTIVE_STATUSES } from "../routes/marketplaces";
+import { STATUSES, INACTIVE_STATUSES, INACTIVE_REASONS } from "../routes/marketplaces";
 import { createResource, supersede } from "../routes/suppliers";
-import { RESOURCE_TYPES, RESOURCE_TYPE_KEYS, SAMPLE_STATUSES, SAMPLE_RANK, matchSupplier, nameKey, refColumns, type SupplierRef } from "./suppliers";
+import { RESOURCE_TYPES, RESOURCE_TYPE_KEYS, matchEligiblePartner, nameKey } from "./suppliers";
 
-export const SLACK_SCHEMA = "sbcg-slack-v1";
+export const SLACK_SCHEMA = "sbcg-slack-v2";
 export const CHANNELS = ["seo", "teammarketing"] as const;
+export const APPLICATION_STATUSES = ["not_applied", "preparing", "submitted", "under_review", "approved", "rejected", "withdrawn"] as const;
+export const CONFLICT_FIELDS = ["relationship_status", "application_status", "application_date"] as const;
 const WORKFLOW: Actor = { signer: "Slack workflow", sub: null };
 
 const TS = z.string().regex(/^\d{9,11}\.\d{1,6}$/, "Slack ts");
@@ -29,6 +35,7 @@ const YMD = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((v) => !Number.isNaN(
 const httpUrl = z.string().max(2000).refine((v) => { try { return ["https:", "http:"].includes(new URL(v).protocol); } catch { return false; } }, "http(s) URL");
 const slackLink = z.string().max(500).refine((v) => { try { const u = new URL(v); return u.protocol === "https:" && /(^|\.)slack\.com$/.test(u.hostname); } catch { return false; } }, "Slack https link");
 const shortText = (max: number) => z.string().trim().min(1).max(max);
+const KEY = z.string().regex(/^[a-z0-9][a-z0-9:._-]{2,119}$/, "lowercase key");
 
 const source = z.object({
   channel: z.enum(CHANNELS),
@@ -36,42 +43,75 @@ const source = z.object({
   thread_ts: TS.nullable().optional(),
   permalink: slackLink,
   date: YMD.optional(),
-});
+}).strict();
+const partnerRef = z.object({ id: z.string().uuid().optional(), names: z.array(shortText(120)).max(5).optional() }).strict()
+  .refine((p) => !!p.id || (p.names?.length ?? 0) > 0, "A partner needs its record id or at least one name");
 
-export const findingSchema = z.object({
-  key: z.string().regex(/^[a-z0-9][a-z0-9:._-]{2,119}$/, "lowercase key"),
-  kind: z.enum(["resource", "terms", "decision", "sample", "outreach", "proposal", "requirement", "action", "blocker"]),
+const base = {
+  key: KEY,
   certainty: z.enum(["confirmed", "tentative", "conflicting", "ambiguous"]),
-  supplier: z.object({ names: z.array(shortText(120)).min(1).max(5), kind: z.enum(["partner", "vendor"]).optional() }).nullable().optional(),
+  // Which of the company's roles the finding is about. Supplier-role findings are always skipped.
+  role: z.enum(["selling", "supplier"]),
   title: shortText(200),
   summary: z.string().trim().max(2000).optional(),
-  question: z.string().trim().max(1000).optional(),
-  resource_type: z.enum(RESOURCE_TYPE_KEYS).optional(),
+  occurred_on: YMD.optional(),
+  sources: z.array(source).min(1).max(20),
+};
+const statusFinding = z.object({
+  ...base, type: z.literal("status"), partner: partnerRef,
+  relationship_status: z.enum(STATUSES).optional(),
+  reason: z.enum(INACTIVE_REASONS).optional(),
+  application_status: z.enum(APPLICATION_STATUSES).optional(),
+  application_date: YMD.optional(),
+}).strict()
+  .refine((f) => f.relationship_status || f.application_status || f.application_date, "A status finding needs relationship_status, application_status or application_date")
+  .refine((f) => !f.relationship_status || !(INACTIVE_STATUSES as readonly string[]).includes(f.relationship_status) || !!f.reason, "An inactive relationship status needs a reason");
+const resourceFinding = z.object({
+  ...base, type: z.literal("resource"), partner: partnerRef,
+  resource_type: z.enum(RESOURCE_TYPE_KEYS),
   link_url: httpUrl.optional(),
   series: z.string().regex(/^[a-z0-9][a-z0-9:._-]{1,119}$/).optional(),
   effective_date: YMD.optional(),
-  sample_status: z.enum(SAMPLE_STATUSES).optional(),
-  action_status: z.enum(["open", "done", "cancelled"]).optional(),
-  marketplace_status: z.enum(STATUSES).optional(),
-  requirement_category: z.enum(["fulfillment", "product", "customization", "pricing", "payment", "technical", "other"]).optional(),
+}).strict();
+const taskFinding = z.object({
+  ...base, type: z.literal("task"), partners: z.array(partnerRef).min(1).max(20),
+  task_id: KEY,                                   // stable action id: the same action always has the same id
   owner: z.string().trim().max(80).optional(),
   due: YMD.optional(),
-  occurred_on: YMD.optional(),
-  sources: z.array(source).min(1).max(20),
+  task_status: z.enum(["open", "done", "cancelled"]).default("open"),
 }).strict();
+const conflictFinding = z.object({
+  ...base, type: z.literal("conflict"), partner: partnerRef,
+  field: z.enum(CONFLICT_FIELDS),
+  values: z.array(z.object({ value: shortText(40), sources: z.array(source).max(10).optional() }).strict()).min(2).max(5),
+}).strict();
+
+export const findingSchema = z.union([statusFinding, resourceFinding, taskFinding, conflictFinding]);
 export type Finding = z.infer<typeof findingSchema>;
 
 export const passSchema = z.object({
-  schema: z.literal(SLACK_SCHEMA),
+  schema: z.literal(SLACK_SCHEMA, { message: `Use format ${SLACK_SCHEMA} (Marketplace Resources). Older scan files must be rebuilt.` }),
   channel: z.enum(CHANNELS),
   through_ts: TS,
   messages: z.array(z.object({ ts: TS, thread_ts: TS.nullable().optional(), edited_ts: TS.nullable().optional() }).strict()).max(5000),
-  findings: z.array(findingSchema).max(500),
+  findings: z.array(z.unknown()).max(500),
 }).strict();
-export type Pass = z.infer<typeof passSchema>;
 
-type Outcome = "added" | "updated" | "flagged" | "unchanged";
-export type PassResult = { channel: string; dry_run: boolean; added: number; updated: number; flagged: number; unchanged: number; findings: { key: string; outcome: Outcome; target: string }[] };
+export type Outcome = "added" | "updated" | "flagged" | "unchanged" | "skipped";
+export type SkipReason = "supplier_role" | "not_listed" | "role_unclear" | "not_confirmed" | "not_open";
+type PartnerName = { id: string; name: string };
+export type Change =
+  | { type: "status"; partner: PartnerName; field: "relationship_status" | "application_status" | "application_date"; from: string | null; to: string | null }
+  | { type: "resource"; partner: PartnerName; title: string; action: "add" | "update"; supersedes: number }
+  | { type: "task"; partners: PartnerName[]; title: string; action: "create" | "update"; due_date: string | null; owner: string | null; note?: string }
+  | { type: "conflict"; partner: PartnerName; field: string; current: string | null; values: string[] };
+export type PassResult = {
+  channel: string; dry_run: boolean;
+  added: number; updated: number; flagged: number; unchanged: number; skipped: number;
+  skipped_reasons: Record<SkipReason, number>;
+  changes: Change[];
+  findings: { key: string; outcome: Exclude<Outcome, "skipped">; target: string }[];
+};
 
 const tsNum = (t: string) => Number(t);
 const latestSource = (s: { date?: string; permalink: string; ts: string }[]) => [...s].sort((a, b) => tsNum(b.ts) - tsNum(a.ts))[0];
@@ -83,9 +123,14 @@ const mergeSources = (a: any[], b: any[]) => {
 };
 /** Content of a finding without its sources: the same event reported from two messages has the same content. */
 const contentHash = (f: Finding) => createHash("sha256").update(JSON.stringify({ ...f, sources: undefined })).digest("hex").slice(0, 32);
+const maxTs = (s: { ts: string }[]) => s.reduce((m, x) => (tsNum(x.ts) > tsNum(m) ? x.ts : m), "0.0");
 
 class DryRun extends Error {}
 
+/**
+ * Applies (or, with dryRun, previews) one pass. `actor` is the signed-in person for app imports (recorded on every
+ * change); the script route uses the workflow's own signature.
+ */
 export async function applyPass(input: unknown, opts: { dryRun?: boolean; importedBy?: Actor } = {}): Promise<PassResult> {
   const parsed = passSchema.safeParse(input);
   if (!parsed.success) {
@@ -94,20 +139,37 @@ export async function applyPass(input: unknown, opts: { dryRun?: boolean; import
     });
   }
   const pass = parsed.data;
-  const keys = pass.findings.map((f) => f.key);
+  const findings: Finding[] = [];
+  const problems: string[] = [];
+  pass.findings.forEach((raw, i) => {
+    const r = findingSchema.safeParse(raw);
+    if (r.success) findings.push(r.data);
+    else problems.push(...r.error.issues.slice(0, 3).map((x) => `findings.${i}${x.path.length ? "." + x.path.join(".") : ""}: ${x.message}`));
+  });
+  if (problems.length) throw new HttpError(400, "payload_rejected", "The scan payload is not valid.", { problems: problems.slice(0, 20) });
+  const keys = findings.map((f) => f.key);
   if (new Set(keys).size !== keys.length) throw new HttpError(400, "payload_rejected", "A finding key appears twice in one pass.", { problems: [] });
 
-  const result: PassResult = { channel: pass.channel, dry_run: !!opts.dryRun, added: 0, updated: 0, flagged: 0, unchanged: 0, findings: [] };
+  const actor = opts.importedBy ?? WORKFLOW;
+  const result: PassResult = {
+    channel: pass.channel, dry_run: !!opts.dryRun, added: 0, updated: 0, flagged: 0, unchanged: 0, skipped: 0,
+    skipped_reasons: { supplier_role: 0, not_listed: 0, role_unclear: 0, not_confirmed: 0, not_open: 0 }, changes: [], findings: [],
+  };
   try {
     await tx(async (c) => {
       await c.query("select 1 from slack_scan_state where channel_key = $1 for update", [pass.channel]);
-      for (const f of pass.findings) {
-        const { outcome, target } = await applyFinding(c, f);
-        result[outcome]++;
-        result.findings.push({ key: f.key, outcome, target });
+      const appliedKeys = new Set<string>();
+      for (const f of findings) {
+        const r = await applyFinding(c, f, actor);
+        if (r.outcome === "skipped") { result.skipped++; result.skipped_reasons[r.reason]++; continue; }
+        appliedKeys.add(f.key);
+        result[r.outcome]++;
+        result.findings.push({ key: f.key, outcome: r.outcome, target: r.target });
+        result.changes.push(...r.changes);
       }
       for (const m of pass.messages) {
-        const cited = pass.findings.filter((f) => f.sources.some((s) => s.channel === pass.channel && s.ts === m.ts)).map((f) => f.key);
+        // Only in-scope findings are linked to messages (out-of-scope messages are counted, never described).
+        const cited = findings.filter((f) => appliedKeys.has(f.key) && f.sources.some((s) => s.channel === pass.channel && s.ts === m.ts)).map((f) => f.key);
         await c.query(
           `insert into slack_messages (channel_key, ts, thread_ts, edited_ts, finding_keys) values ($1,$2,$3,$4,$5)
            on conflict (channel_key, ts) do update set thread_ts = excluded.thread_ts, edited_ts = excluded.edited_ts,
@@ -117,14 +179,14 @@ export async function applyPass(input: unknown, opts: { dryRun?: boolean; import
       }
       const cur = (await c.query("select position_ts from slack_scan_state where channel_key = $1", [pass.channel])).rows[0];
       const position = cur?.position_ts && tsNum(cur.position_ts) > tsNum(pass.through_ts) ? cur.position_ts : pass.through_ts;
+      const counts = { added: result.added, updated: result.updated, flagged: result.flagged, unchanged: result.unchanged, skipped: result.skipped };
       await c.query(
         `update slack_scan_state set position_ts = $2, last_success_at = now(), last_attempt_at = now(), last_error = null, last_counts = $3 where channel_key = $1`,
-        [pass.channel, position, JSON.stringify({ added: result.added, updated: result.updated, flagged: result.flagged, unchanged: result.unchanged })],
+        [pass.channel, position, JSON.stringify(counts)],
       );
-      // Imports from the app (signed-in session) are logged under the person's name.
       if (opts.importedBy) {
         await audit(c, opts.importedBy, { entityType: "slack_scan", entityId: null, action: "import",
-          after: { channel: pass.channel, through_ts: pass.through_ts, added: result.added, updated: result.updated, flagged: result.flagged, unchanged: result.unchanged } });
+          after: { channel: pass.channel, through_ts: pass.through_ts, format: SLACK_SCHEMA, ...counts, skipped_reasons: result.skipped_reasons } });
       }
       if (opts.dryRun) throw new DryRun();
     });
@@ -140,239 +202,241 @@ export async function applyPass(input: unknown, opts: { dryRun?: boolean; import
   return result;
 }
 
-async function recordFinding(c: pg.PoolClient, f: Finding, hash: string, targetType: string, targetId: string | null, sources: any[]) {
-  await c.query(
-    `insert into slack_findings (key, kind, content_hash, target_type, target_id, sources) values ($1,$2,$3,$4,$5,$6)
-     on conflict (key) do update set kind = excluded.kind, content_hash = excluded.content_hash, target_type = excluded.target_type,
-       target_id = excluded.target_id, sources = excluded.sources, updated_at = now()`,
-    [f.key, f.kind, hash, targetType, targetId, JSON.stringify(sources)],
-  );
-}
+type Applied =
+  | { outcome: Exclude<Outcome, "skipped">; target: string; changes: Change[] }
+  | { outcome: "skipped"; reason: SkipReason };
+type Ctx = { prev: any; hash: string; sources: any[]; latestUrl: string; latestDate: string; evidenceTs: string; actor: Actor };
 
-async function flag(c: pg.PoolClient, f: Finding, question: string, sources: any[], hash: string, supplierHint: string | null): Promise<{ outcome: Outcome; target: string }> {
-  const prev = (await c.query("select * from review_items where finding_key = $1", [f.key])).rows[0];
-  const fields = [f.kind, f.title, f.summary ?? null, question, supplierHint, JSON.stringify(sources)];
-  let id: string;
-  if (!prev) {
-    id = (await c.query(
-      `insert into review_items (finding_key, kind, title, summary, question, supplier_hint, sources) values ($1,$2,$3,$4,$5,$6,$7) returning id`,
-      [f.key, ...fields])).rows[0].id;
-  } else {
-    id = prev.id;
-    const sameContent = (await c.query("select content_hash from slack_findings where key = $1", [f.key])).rows[0]?.content_hash === hash;
-    // New information reopens an item someone already resolved; the same content again only adds sources.
-    await c.query(
-      `update review_items set kind = $2, title = $3, summary = $4, question = $5, supplier_hint = $6, sources = $7,
-         status = case when $8 then status else 'open' end, updated_at = now(), version = version + 1 where id = $1`,
-      [id, ...fields, sameContent]);
+async function applyFinding(c: pg.PoolClient, f: Finding, actor: Actor): Promise<Applied> {
+  // Scope first: nothing is written for out-of-scope findings.
+  if (f.role !== "selling") return { outcome: "skipped", reason: "supplier_role" };
+  if (f.type !== "conflict" && f.certainty !== "confirmed") return { outcome: "skipped", reason: "not_confirmed" };
+  const refs = f.type === "task" ? f.partners : [f.partner];
+  const partners: PartnerName[] = [];
+  for (const ref of refs) {
+    const m = await matchEligiblePartner(c, ref);
+    if (!m.ok) return { outcome: "skipped", reason: m.reason === "role_unclear" ? "role_unclear" : "not_listed" };
+    if (!partners.some((p) => p.id === m.id)) partners.push({ id: m.id, name: m.name });
   }
-  await recordFinding(c, f, hash, "review_item", id, sources);
-  return { outcome: "flagged", target: `review_item:${id}` };
-}
 
-async function applyFinding(c: pg.PoolClient, f: Finding): Promise<{ outcome: Outcome; target: string }> {
   const prev = (await c.query("select * from slack_findings where key = $1 for update", [f.key])).rows[0];
   const hash = contentHash(f);
   const sources = mergeSources(prev?.sources ?? [], f.sources);
-  const newSources = sources.length !== (prev?.sources ?? []).length;
+  const evidenceTs = maxTs(f.sources);
+  const latest = latestSource(f.sources);
+  const ctx: Ctx = { prev, hash, sources, latestUrl: latest.permalink, latestDate: f.occurred_on ?? sourceDate(latest), evidenceTs, actor };
 
-  // The same event again (retry, or the other channel): keep the record, add any new supporting messages.
-  if (prev && prev.content_hash === hash) {
-    if (!newSources) return { outcome: "unchanged", target: `${prev.target_type}:${prev.target_id}` };
-    await c.query("update slack_findings set sources = $2, updated_at = now() where key = $1", [f.key, JSON.stringify(sources)]);
+  // The same event again (retry, edit with no change, or the other channel): keep the record, add the messages.
+  // Older evidence read after newer evidence never overwrites it either.
+  const older = prev?.evidence_ts && tsNum(prev.evidence_ts) > tsNum(evidenceTs);
+  if (prev && prev.format === 2 && (prev.content_hash === hash || older)) {
+    const keep = older ? prev.evidence_ts : evidenceTs;
+    await c.query("update slack_findings set sources = $2, evidence_ts = $3, updated_at = now() where key = $1", [f.key, JSON.stringify(sources), keep]);
     if (prev.target_type === "review_item") await c.query("update review_items set sources = $2, updated_at = now() where id = $1", [prev.target_id, JSON.stringify(sources)]);
-    return { outcome: "updated", target: `${prev.target_type}:${prev.target_id}` };
+    return { outcome: "unchanged", target: `${prev.target_type}:${prev.target_id}`, changes: [] };
   }
 
-  const supplierNames = f.supplier?.names ?? [];
-  const hint = supplierNames.length ? supplierNames.join(" / ") : null;
-  if (f.certainty !== "confirmed") {
-    return flag(c, f, f.question ?? `This is ${f.certainty}. Confirm it before it updates any record.`, sources, hash, hint);
-  }
-
-  let supplier: SupplierRef | null = null;
-  if (f.supplier) {
-    const kindFilter = ["outreach", "proposal", "requirement"].includes(f.kind) ? "partner" : f.supplier.kind;
-    const m = await matchSupplier(c, supplierNames, kindFilter);
-    if (!m.ref) {
-      const q = m.reason === "several_matches"
-        ? `Which record is "${hint}"? Several match: ${m.candidates.join("; ")}.`
-        : `No ${kindFilter === "partner" ? "partner" : "partner or vendor"} record named "${hint}". Create one, or say which existing record this is.`;
-      return flag(c, f, q, sources, hash, hint);
-    }
-    supplier = m.ref;
-  }
-  const latest = latestSource(sources);
-  const ctx = { prev, hash, sources, latestUrl: latest.permalink, latestDate: sourceDate(latest) };
-
-  switch (f.kind) {
-    case "resource": case "terms": case "decision":
-      if (!supplier) {
-        if (f.kind === "decision") return applyAction(c, f, null, ctx, "decision");
-        return flag(c, f, f.question ?? "Which supplier does this belong to?", sources, hash, hint);
-      }
-      return applyResource(c, f, supplier, ctx);
-    case "sample": return applySample(c, f, supplier, ctx);
-    case "outreach": case "proposal":
-      if (supplier?.kind !== "partner") return flag(c, f, "Which partner record is this about?", sources, hash, hint);
-      return applyOutreach(c, f, supplier.id, ctx);
-    case "requirement":
-      if (supplier?.kind !== "partner") return flag(c, f, "Which partner record is this requirement for?", sources, hash, hint);
-      return applyRequirement(c, f, supplier.id, ctx);
-    case "action": case "blocker":
-      return applyAction(c, f, supplier, ctx, f.kind);
+  switch (f.type) {
+    case "status": return applyStatus(c, f, partners[0], ctx);
+    case "resource": return applyResource(c, f, partners[0], ctx);
+    case "task": return applyTask(c, f, partners, ctx);
+    case "conflict": return applyConflict(c, f, partners[0], ctx);
   }
 }
 
-type Ctx = { prev: any; hash: string; sources: any[]; latestUrl: string; latestDate: string };
-const done = async (c: pg.PoolClient, f: Finding, ctx: Ctx, type: string, id: string, outcome: Outcome) => {
-  await recordFinding(c, f, ctx.hash, type, id, ctx.sources);
-  // A finding that had been waiting for review and is now confirmed and applied closes its review item.
-  await c.query(`update review_items set status = 'resolved', resolution_note = coalesce(resolution_note, 'Confirmed by a later Slack message.'),
-    resolved_by = coalesce(resolved_by, 'Slack workflow'), resolved_at = coalesce(resolved_at, now()), updated_at = now(), version = version + 1
-    where finding_key = $1 and status = 'open'`, [f.key]);
-  return { outcome, target: `${type}:${id}` };
-};
+async function recordFinding(c: pg.PoolClient, f: Finding, ctx: Ctx, targetType: string, targetId: string | null) {
+  const evidence = ctx.prev?.evidence_ts && tsNum(ctx.prev.evidence_ts) > tsNum(ctx.evidenceTs) ? ctx.prev.evidence_ts : ctx.evidenceTs;
+  await c.query(
+    `insert into slack_findings (key, kind, content_hash, target_type, target_id, sources, format, scope, evidence_ts) values ($1,$2,$3,$4,$5,$6,2,'in_scope',$7)
+     on conflict (key) do update set kind = excluded.kind, content_hash = excluded.content_hash, target_type = excluded.target_type,
+       target_id = excluded.target_id, sources = excluded.sources, format = 2, scope = 'in_scope', evidence_ts = excluded.evidence_ts, updated_at = now()`,
+    [f.key, f.type, ctx.hash, targetType, targetId, JSON.stringify(ctx.sources), evidence],
+  );
+}
 
-async function applyResource(c: pg.PoolClient, f: Finding, s: SupplierRef, ctx: Ctx) {
-  const type = f.resource_type ?? (f.kind === "terms" ? "other_term" : f.kind === "decision" ? "decision" : "other_document");
-  const col = s.kind === "partner" ? "marketplace_id" : "vendor_id";
+// ------------------------------------------------------------------ status
+/** Sets a partner's relationship status with history (used by the workflow and by review decisions). */
+export async function setRelationshipStatus(c: pg.PoolClient, a: Actor, marketplaceId: string, to: string, detail: string, reason: string | null, evidenceAt: Date) {
+  const m = (await c.query("select id, status from marketplaces where id = $1 for update", [marketplaceId])).rows[0];
+  if (!m || m.status === to) return null;
+  if ((INACTIVE_STATUSES as readonly string[]).includes(to) && !reason) throw new HttpError(400, "invalid_request", "A reason is required for this status.");
+  await c.query("update marketplaces set status = $2, status_evidence_at = $3, updated_at = now(), version = version + 1 where id = $1", [marketplaceId, to, evidenceAt]);
+  await c.query(
+    `insert into status_history (marketplace_id, from_status, to_status, reason, detail, signer_name, auth_subject) values ($1,$2,$3,$4,$5,$6,$7)`,
+    [marketplaceId, m.status, to, reason, detail.slice(0, 2000), a.signer, a.sub]);
+  await audit(c, a, { entityType: "marketplace", entityId: marketplaceId, marketplaceId, action: "status_change", before: { status: m.status }, after: { status: to, reason } });
+  return { from: m.status as string, to };
+}
+
+/** Sets a partner's application status and/or date (separate from the relationship status). */
+export async function setApplication(c: pg.PoolClient, a: Actor, marketplaceId: string, d: { application_status?: string | null; application_date?: string | null }, note: string, evidenceAt: Date) {
+  const m = (await c.query("select id, application_status, application_date from marketplaces where id = $1 for update", [marketplaceId])).rows[0];
+  const curDate = m.application_date ? new Date(m.application_date).toISOString().slice(0, 10) : null;
+  const set: Record<string, unknown> = {};
+  if (d.application_status !== undefined && d.application_status !== m.application_status) set.application_status = d.application_status;
+  if (d.application_date !== undefined && d.application_date !== curDate) set.application_date = d.application_date;
+  if (!Object.keys(set).length) return [];
+  const cols = Object.keys(set);
+  await c.query(`update marketplaces set ${cols.map((k, i) => `${k} = $${i + 2}`).join(", ")}, application_updated_at = $${cols.length + 2}, updated_at = now(), version = version + 1 where id = $1`,
+    [marketplaceId, ...cols.map((k) => set[k]), evidenceAt]);
+  await audit(c, a, { entityType: "marketplace", entityId: marketplaceId, marketplaceId, action: "application_update",
+    before: { application_status: m.application_status, application_date: curDate }, after: { ...set, note: note.slice(0, 500) } });
+  return cols.map((k) => ({ field: k as "application_status" | "application_date", from: (k === "application_date" ? curDate : m.application_status) as string | null, to: set[k] as string | null }));
+}
+
+async function applyStatus(c: pg.PoolClient, f: z.infer<typeof statusFinding>, p: PartnerName, ctx: Ctx): Promise<Applied> {
+  const changes: Change[] = [];
+  const evidenceAt = new Date(tsNum(ctx.evidenceTs) * 1000);
+  const detail = `${f.title}${f.summary ? `\n${f.summary}` : ""}\nSource: ${ctx.latestUrl}`;
+  // Latest confirmed evidence wins: a status set from newer evidence (or by hand after this message) is kept.
+  const m = (await c.query("select status_evidence_at, application_updated_at from marketplaces where id = $1", [p.id])).rows[0];
+  const newerThan = (t: any) => t && new Date(t) > evidenceAt;
+  if (f.relationship_status && !newerThan(m.status_evidence_at)) {
+    const r = await setRelationshipStatus(c, ctx.actor, p.id, f.relationship_status, detail, f.reason ?? null, evidenceAt);
+    if (r) changes.push({ type: "status", partner: p, field: "relationship_status", from: r.from, to: r.to });
+  }
+  if ((f.application_status || f.application_date) && !newerThan(m.application_updated_at)) {
+    const r = await setApplication(c, ctx.actor, p.id, { application_status: f.application_status, application_date: f.application_date }, `${f.title} (${ctx.latestUrl})`, evidenceAt);
+    for (const x of r) changes.push({ type: "status", partner: p, field: x.field, from: x.from, to: x.to });
+  }
+  await recordFinding(c, f, ctx, "marketplace", p.id);
+  await closeReviewByFinding(c, f.key, ctx.actor);
+  return { outcome: changes.length ? "updated" : "unchanged", target: `marketplace:${p.id}`, changes };
+}
+
+// ------------------------------------------------------------------ resources
+async function applyResource(c: pg.PoolClient, f: z.infer<typeof resourceFinding>, p: PartnerName, ctx: Ctx): Promise<Applied> {
   const fields = {
-    resource_type: type, title: f.title, link_url: f.link_url ?? null, note: f.summary ?? null, source_url: ctx.latestUrl,
+    resource_type: f.resource_type, title: f.title, link_url: f.link_url ?? null, note: f.summary ?? null, source_url: ctx.latestUrl,
     effective_date: f.effective_date ?? null, last_confirmed_on: ctx.latestDate, series_key: f.series ?? null,
   };
   let row = (await c.query(`select * from supplier_resources where finding_key = $1 for update`, [f.key])).rows[0];
-  // Match an existing record (e.g. added manually) before creating: same supplier, same title, still current.
+  // Match an existing record (e.g. added manually) before creating: same partner, same title, still current.
   if (!row) row = (await c.query(
-    `select * from supplier_resources where ${col} = $1 and finding_key is null and status = 'current' and removed_at is null for update`, [s.id]))
+    `select * from supplier_resources where marketplace_id = $1 and finding_key is null and status = 'current' and removed_at is null and excluded_at is null for update`, [p.id]))
     .rows.find((r: any) => nameKey(r.title) === nameKey(f.title));
-  let outcome: Outcome;
+  let outcome: "added" | "updated";
   if (row) {
-    const sameSupplier = row[col] === s.id;
-    if (!sameSupplier) return flag(c, f, `This finding was applied to a different supplier before; the corrected message names "${f.supplier?.names.join(" / ")}". Which is right?`, ctx.sources, ctx.hash, null);
     const after = (await c.query(
-      `update supplier_resources set resource_type = $2, section = $3, title = $4, link_url = coalesce($5, link_url), note = coalesce($6, note),
+      `update supplier_resources set marketplace_id = $12, vendor_id = null, resource_type = $2, section = $3, title = $4, link_url = coalesce($5, link_url), note = coalesce($6, note),
          source_url = $7, effective_date = coalesce($8, effective_date), last_confirmed_on = $9, series_key = coalesce($10, series_key),
-         finding_key = $11, updated_at = now(), version = version + 1 where id = $1 returning *`,
-      [row.id, type, RESOURCE_TYPES[type], fields.title, fields.link_url, fields.note, fields.source_url, fields.effective_date,
-        fields.last_confirmed_on, fields.series_key, f.key])).rows[0];
-    await audit(c, WORKFLOW, { entityType: "supplier_resource", entityId: row.id, marketplaceId: refColumns(s).marketplace_id, action: "slack_update", after: { title: after.title, source_url: after.source_url } });
+         finding_key = $11, excluded_at = null, excluded_reason = null, updated_at = now(), version = version + 1 where id = $1 returning *`,
+      [row.id, f.resource_type, RESOURCE_TYPES[f.resource_type], fields.title, fields.link_url, fields.note, fields.source_url, fields.effective_date,
+        fields.last_confirmed_on, fields.series_key, f.key, p.id])).rows[0];
+    await audit(c, ctx.actor, { entityType: "supplier_resource", entityId: row.id, marketplaceId: p.id, action: "slack_update", after: { title: after.title, source_url: after.source_url } });
     row = after;
     outcome = "updated";
   } else {
-    row = await createResource(c, s, fields, WORKFLOW, { origin: "slack", finding_key: f.key });
+    row = await createResource(c, { kind: "partner", id: p.id }, fields, ctx.actor, { origin: "slack", finding_key: f.key });
     outcome = "added";
   }
   // A confirmed replacement in the same series supersedes the earlier current version(s); they stay in history.
+  let superseded = 0;
   if (f.series && row.status === "current") {
-    const older = (await c.query(
-      `select id from supplier_resources where ${col} = $1 and series_key = $2 and status = 'current' and removed_at is null and id <> $3
+    const olderRows = (await c.query(
+      `select id from supplier_resources where marketplace_id = $1 and series_key = $2 and status = 'current' and removed_at is null and id <> $3
          and coalesce(effective_date, last_confirmed_on, created_at::date) <= coalesce($4::date, $5::date)`,
-      [s.id, f.series, row.id, f.effective_date ?? null, ctx.latestDate])).rows;
-    for (const o of older) await supersede(c, o.id, row, WORKFLOW);
+      [p.id, f.series, row.id, f.effective_date ?? null, ctx.latestDate])).rows;
+    for (const o of olderRows) { await supersede(c, o.id, row, ctx.actor); superseded++; }
   }
-  return done(c, f, ctx, "supplier_resource", row.id, outcome);
+  await recordFinding(c, f, ctx, "supplier_resource", row.id);
+  await closeReviewByFinding(c, f.key, ctx.actor);
+  return { outcome, target: `supplier_resource:${row.id}`, changes: [{ type: "resource", partner: p, title: f.title, action: outcome === "added" ? "add" : "update", supersedes: superseded }] };
 }
 
-async function applySample(c: pg.PoolClient, f: Finding, s: SupplierRef | null, ctx: Ctx) {
-  if (!f.sample_status) return flag(c, f, "What is the sample's status (requested, approved, shipped, delivered)?", ctx.sources, ctx.hash, f.supplier?.names.join(" / ") ?? null);
-  let row = (await c.query("select * from sample_requests where finding_key = $1 for update", [f.key])).rows[0];
-  if (!row && s) {
-    const col = s.kind === "partner" ? "marketplace_id" : "vendor_id";
-    const open = (await c.query(`select * from sample_requests where ${col} = $1 and status not in ('delivered', 'cancelled') for update`, [s.id])).rows;
-    if (open.length > 1) return flag(c, f, `Several open sample requests exist for this supplier: which one is it?`, ctx.sources, ctx.hash, f.supplier?.names.join(" / ") ?? null);
-    row = open[0];
+// ------------------------------------------------------------------ tasks
+async function applyTask(c: pg.PoolClient, f: z.infer<typeof taskFinding>, partners: PartnerName[], ctx: Ctx): Promise<Applied> {
+  const ids = partners.map((p) => p.id).sort();
+  let row = (await c.query("select * from corporate_task_requests where task_key = $1 for update", [f.task_id])).rows[0];
+  // Match an existing task request (e.g. entered manually) before creating: same title, same partners, not dismissed.
+  if (!row) row = (await c.query("select * from corporate_task_requests where delivery_status <> 'dismissed' for update")).rows
+    .find((r: any) => nameKey(r.title) === nameKey(f.title) && [...r.marketplace_ids].sort().join() === ids.join());
+  const next = { title: f.title, brief: f.summary ?? null, owner_hint: f.owner ?? null, due_date: f.due ?? null, slack_status: f.task_status, ids };
+  if (!row) {
+    // A historical or completed action does not establish an open task.
+    if (f.task_status !== "open") return { outcome: "skipped", reason: "not_open" };
+    const ins = (await c.query(
+      `insert into corporate_task_requests (task_key, title, brief, owner_hint, due_date, slack_status, marketplace_ids, source_refs, origin, created_by)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,'slack',$9) returning *`,
+      [f.task_id, next.title, next.brief, next.owner_hint, next.due_date, next.slack_status, ids, JSON.stringify(ctx.sources), ctx.actor.signer])).rows[0];
+    await audit(c, ctx.actor, { entityType: "corporate_task_request", entityId: ins.id, action: "slack_create",
+      after: { title: ins.title, marketplace_ids: ids, due_date: ins.due_date, sources: ctx.sources.map((s: any) => s.permalink) } });
+    await recordFinding(c, f, ctx, "corporate_task_request", ins.id);
+    return { outcome: "added", target: `corporate_task_request:${ins.id}`, changes: [{ type: "task", partners, title: f.title, action: "create", due_date: next.due_date, owner: next.owner_hint }] };
   }
-  if (!row && !s && f.sample_status !== "requested") {
-    return flag(c, f, "This sample update does not match a tracked request. Which request is it?", ctx.sources, ctx.hash, null);
+  const cur = { title: row.title, brief: row.brief, owner_hint: row.owner_hint, due_date: row.due_date ? new Date(row.due_date).toISOString().slice(0, 10) : null, slack_status: row.slack_status, ids: [...row.marketplace_ids].sort() };
+  // Ownership and completion belong to Task Tracker once delivered; Slack only updates the request's own fields.
+  const merged = { ...next, brief: next.brief ?? cur.brief, owner_hint: next.owner_hint ?? cur.owner_hint, due_date: next.due_date ?? cur.due_date };
+  const changed = JSON.stringify(merged) !== JSON.stringify(cur);
+  if (changed) {
+    await c.query(
+      `update corporate_task_requests set task_key = coalesce(task_key, $2), title = $3, brief = $4, owner_hint = $5, due_date = $6, slack_status = $7,
+         marketplace_ids = $8, source_refs = $9, content_version = content_version + 1, updated_at = now(), version = version + 1 where id = $1`,
+      [row.id, f.task_id, merged.title, merged.brief, merged.owner_hint, merged.due_date, merged.slack_status, merged.ids, JSON.stringify(mergeSources(row.source_refs ?? [], ctx.sources))]);
+    await audit(c, ctx.actor, { entityType: "corporate_task_request", entityId: row.id, action: "slack_update", before: cur, after: merged });
+  } else {
+    await c.query("update corporate_task_requests set source_refs = $2 where id = $1", [row.id, JSON.stringify(mergeSources(row.source_refs ?? [], ctx.sources))]);
   }
-  if (row) {
-    // Latest confirmed status wins; an older message read later never moves a sample backwards.
-    const forward = SAMPLE_RANK[f.sample_status] >= SAMPLE_RANK[row.status];
-    const after = (await c.query(
-      `update sample_requests set status = $2, status_on = $3, note = coalesce($4, note), source_url = $5, finding_key = coalesce(finding_key, $6),
-         updated_at = now(), version = version + 1 where id = $1 returning *`,
-      [row.id, forward ? f.sample_status : row.status, forward ? (f.occurred_on ?? ctx.latestDate) : row.status_on, f.summary ?? null,
-        forward ? ctx.latestUrl : row.source_url, row.finding_key ? null : f.key])).rows[0];
-    await audit(c, WORKFLOW, { entityType: "sample_request", entityId: row.id, marketplaceId: row.marketplace_id, action: "slack_update", before: { status: row.status }, after: { status: after.status } });
-    return done(c, f, ctx, "sample_request", row.id, "updated");
-  }
-  const ins = (await c.query(
-    `insert into sample_requests (label, marketplace_id, vendor_id, status, status_on, note, source_url, origin, finding_key, created_by)
-     values ($1,$2,$3,$4,$5,$6,$7,'slack',$8,$9) returning *`,
-    [f.title, refColumns(s).marketplace_id, refColumns(s).vendor_id, f.sample_status, f.occurred_on ?? ctx.latestDate, f.summary ?? null, ctx.latestUrl, f.key, WORKFLOW.signer])).rows[0];
-  await audit(c, WORKFLOW, { entityType: "sample_request", entityId: ins.id, marketplaceId: ins.marketplace_id, action: "slack_create", after: { status: ins.status } });
-  return done(c, f, ctx, "sample_request", ins.id, "added");
+  await recordFinding(c, f, ctx, "corporate_task_request", row.id);
+  const note = row.delivery_status === "delivered" && changed
+    ? (merged.due_date !== cur.due_date ? "Already in Task Tracker: the due date will be updated there; title and owner stay as set in Task Tracker." : "Already in Task Tracker: it keeps its own title, owner and completion.")
+    : undefined;
+  return {
+    outcome: changed ? "updated" : "unchanged", target: `corporate_task_request:${row.id}`,
+    changes: changed ? [{ type: "task", partners, title: merged.title, action: "update", due_date: merged.due_date, owner: merged.owner_hint, ...(note ? { note } : {}) }] : [],
+  };
 }
 
-async function applyOutreach(c: pg.PoolClient, f: Finding, marketplaceId: string, ctx: Ctx) {
-  // A meaningful status change moves the partner record (with history). Inactive statuses need a reason → review.
-  if (f.marketplace_status) {
-    const m = (await c.query("select * from marketplaces where id = $1 for update", [marketplaceId])).rows[0];
-    if (m.status !== f.marketplace_status) {
-      if ((INACTIVE_STATUSES as readonly string[]).includes(f.marketplace_status)) {
-        return flag(c, f, `Change ${m.name} to "${f.marketplace_status.replace(/_/g, " ")}"? This status needs a reason, so it is not changed automatically.`, ctx.sources, ctx.hash, m.name);
-      }
-      await c.query("update marketplaces set status = $2, updated_at = now(), version = version + 1 where id = $1", [marketplaceId, f.marketplace_status]);
-      await c.query(
-        `insert into status_history (marketplace_id, from_status, to_status, detail, signer_name) values ($1,$2,$3,$4,$5)`,
-        [marketplaceId, m.status, f.marketplace_status, `${f.title}${f.summary ? `\n${f.summary}` : ""}\nSource: ${ctx.latestUrl}`, WORKFLOW.signer]);
-      await audit(c, WORKFLOW, { entityType: "marketplace", entityId: marketplaceId, marketplaceId, action: "status_change", before: { status: m.status }, after: { status: f.marketplace_status } });
-    }
-  }
-  const summary = `${f.title}${f.summary ? ` — ${f.summary}` : ""}`.slice(0, 4000);
-  const row = (await c.query("select * from communications where finding_key = $1 for update", [f.key])).rows[0];
-  if (row) {
-    await c.query(`update communications set summary = $2, reference_url = $3, occurred_on = $4, updated_at = now(), version = version + 1 where id = $1`,
-      [row.id, summary, ctx.latestUrl, f.occurred_on ?? row.occurred_on]);
-    await audit(c, WORKFLOW, { entityType: "communication", entityId: row.id, marketplaceId, action: "slack_update", after: { summary } });
-    return done(c, f, ctx, "communication", row.id, "updated");
-  }
-  const ins = (await c.query(
-    `insert into communications (marketplace_id, occurred_on, signer_name, method, summary, reference_url, finding_key)
-     values ($1,$2,$3,'other',$4,$5,$6) returning id`,
-    [marketplaceId, f.occurred_on ?? ctx.latestDate, WORKFLOW.signer, summary, ctx.latestUrl, f.key])).rows[0];
-  await audit(c, WORKFLOW, { entityType: "communication", entityId: ins.id, marketplaceId, action: "slack_create", after: { summary } });
-  return done(c, f, ctx, "communication", ins.id, ctx.prev ? "updated" : "added");
+// ------------------------------------------------------------------ conflicts
+const FIELD_LABEL: Record<string, string> = { relationship_status: "Relationship status", application_status: "Application status", application_date: "Application date" };
+async function currentValue(c: pg.PoolClient, id: string, field: string) {
+  const m = (await c.query("select status, application_status, application_date from marketplaces where id = $1", [id])).rows[0];
+  if (field === "relationship_status") return m.status as string;
+  if (field === "application_status") return m.application_status as string | null;
+  return m.application_date ? new Date(m.application_date).toISOString().slice(0, 10) : null;
+}
+function checkValue(field: string, v: string) {
+  if (field === "relationship_status") return (STATUSES as readonly string[]).includes(v);
+  if (field === "application_status") return (APPLICATION_STATUSES as readonly string[]).includes(v);
+  return /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`));
 }
 
-async function applyRequirement(c: pg.PoolClient, f: Finding, marketplaceId: string, ctx: Ctx) {
-  let row = (await c.query("select * from requirements where finding_key = $1 for update", [f.key])).rows[0];
-  if (!row) row = (await c.query("select * from requirements where marketplace_id = $1 and finding_key is null and removed_at is null for update", [marketplaceId]))
-    .rows.find((r: any) => nameKey(r.requirement) === nameKey(f.title));
-  if (row) {
-    await c.query(`update requirements set requirement = $2, response = coalesce($3, response), source_ref = $4, finding_key = $5,
-        updated_at = now(), version = version + 1 where id = $1`, [row.id, f.title, f.summary ?? null, ctx.latestUrl, f.key]);
-    await audit(c, WORKFLOW, { entityType: "requirement", entityId: row.id, marketplaceId, action: "slack_update", after: { requirement: f.title } });
-    return done(c, f, ctx, "requirement", row.id, "updated");
+async function applyConflict(c: pg.PoolClient, f: z.infer<typeof conflictFinding>, p: PartnerName, ctx: Ctx): Promise<Applied> {
+  const bad = f.values.find((v) => !checkValue(f.field, v.value));
+  if (bad) throw new HttpError(400, "payload_rejected", "The scan payload is not valid.", { problems: [`${f.key}: "${bad.value}" is not a valid ${FIELD_LABEL[f.field].toLowerCase()}`] });
+  const current = await currentValue(c, p.id, f.field);
+  const options = f.values.map((v) => ({
+    label: f.field === "application_date" ? `Apply date: ${v.value}` : `Apply status: ${v.value.replace(/_/g, " ")}`,
+    change: { type: "status", field: f.field, to: v.value },
+    sources: v.sources ?? [],
+  }));
+  const values = f.values.map((v) => v.value);
+  const question = `${FIELD_LABEL[f.field]} for ${p.name}: messages disagree (${values.join(" vs ")}). Current value: ${current ?? "not set"}.`;
+  const prev = (await c.query("select * from review_items where finding_key = $1 for update", [f.key])).rows[0];
+  let id: string;
+  if (!prev) {
+    id = (await c.query(
+      `insert into review_items (finding_key, kind, title, summary, question, supplier_hint, sources, format, marketplace_id, field, current_value, options)
+       values ($1,'conflict',$2,$3,$4,$5,$6,2,$7,$8,$9,$10) returning id`,
+      [f.key, f.title, f.summary ?? null, question, p.name, JSON.stringify(ctx.sources), p.id, f.field, current, JSON.stringify(options)])).rows[0].id;
+  } else {
+    id = prev.id;
+    // New, different evidence reopens a decided item; the same content again only adds sources.
+    await c.query(
+      `update review_items set kind = 'conflict', title = $2, summary = $3, question = $4, supplier_hint = $5, sources = $6, format = 2, marketplace_id = $7,
+         field = $8, current_value = $9, options = $10, status = 'open', resolution = null, resolved_by = null, resolved_at = null,
+         updated_at = now(), version = version + 1 where id = $1`,
+      [id, f.title, f.summary ?? null, question, p.name, JSON.stringify(ctx.sources), p.id, f.field, current, JSON.stringify(options)]);
   }
-  const ins = (await c.query(
-    `insert into requirements (marketplace_id, category, requirement, response, source_ref, created_by, finding_key)
-     values ($1,$2,$3,$4,$5,$6,$7) returning id`,
-    [marketplaceId, f.requirement_category ?? "other", f.title, f.summary ?? null, ctx.latestUrl, WORKFLOW.signer, f.key])).rows[0];
-  await audit(c, WORKFLOW, { entityType: "requirement", entityId: ins.id, marketplaceId, action: "slack_create", after: { requirement: f.title } });
-  return done(c, f, ctx, "requirement", ins.id, "added");
+  await recordFinding(c, f, ctx, "review_item", id);
+  return { outcome: "flagged", target: `review_item:${id}`, changes: [{ type: "conflict", partner: p, field: f.field, current, values }] };
 }
 
-async function applyAction(c: pg.PoolClient, f: Finding, s: SupplierRef | null, ctx: Ctx, kind: "action" | "blocker" | "decision") {
-  let row = (await c.query("select * from corporate_actions where finding_key = $1 for update", [f.key])).rows[0];
-  if (!row) row = (await c.query("select * from corporate_actions where kind = $1 and finding_key is null and status = 'open' for update", [kind]))
-    .rows.find((r: any) => nameKey(r.title) === nameKey(f.title) && (r.marketplace_id ?? null) === refColumns(s).marketplace_id && (r.vendor_id ?? null) === refColumns(s).vendor_id);
-  const status = f.action_status ?? (kind === "decision" ? "done" : "open");
-  if (row) {
-    await c.query(`update corporate_actions set title = $2, note = coalesce($3, note), owner = coalesce($4, owner), due_date = coalesce($5, due_date),
-        status = $6, closed_at = case when $6 = 'open' then null else coalesce(closed_at, now()) end, source_url = $7, finding_key = $8,
-        updated_at = now(), version = version + 1 where id = $1`,
-      [row.id, f.title, f.summary ?? null, f.owner ?? null, f.due ?? null, status, ctx.latestUrl, f.key]);
-    await audit(c, WORKFLOW, { entityType: "corporate_action", entityId: row.id, marketplaceId: row.marketplace_id, action: "slack_update", before: { status: row.status }, after: { status } });
-    return done(c, f, ctx, "corporate_action", row.id, "updated");
-  }
-  const ins = (await c.query(
-    `insert into corporate_actions (kind, title, note, owner, due_date, status, closed_at, marketplace_id, vendor_id, source_url, origin, finding_key, created_by)
-     values ($1,$2,$3,$4,$5,$6,case when $6 = 'open' then null else now() end,$7,$8,$9,'slack',$10,$11) returning id, marketplace_id`,
-    [kind, f.title, f.summary ?? null, f.owner ?? null, f.due ?? null, status, refColumns(s).marketplace_id, refColumns(s).vendor_id, ctx.latestUrl, f.key, WORKFLOW.signer])).rows[0];
-  await audit(c, WORKFLOW, { entityType: "corporate_action", entityId: ins.id, marketplaceId: ins.marketplace_id, action: "slack_create", after: { kind, status } });
-  return done(c, f, ctx, "corporate_action", ins.id, "added");
+/** A later confirmed finding with the same key settles an open conflict about it. */
+async function closeReviewByFinding(c: pg.PoolClient, key: string, a: Actor) {
+  await c.query(`update review_items set status = 'resolved', resolution = 'applied', resolution_note = coalesce(resolution_note, 'Settled by a later confirmed Slack message.'),
+    resolved_by = coalesce(resolved_by, $2), resolved_at = coalesce(resolved_at, now()), updated_at = now(), version = version + 1
+    where finding_key = $1 and status = 'open'`, [key, a.signer]);
 }
 
 /** For the scanner: per-channel position, and the threads that already have findings (to revisit for new replies). */
