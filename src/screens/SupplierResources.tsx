@@ -442,6 +442,7 @@ function SlackScans() {
   return (
     <>
       <p className="hint">Each channel is scanned separately. A failed scan changes no records; the last successful scan time stays as it was.</p>
+      <SlackImport onSaved={d.reload} />
       {d.loading && !d.data && <Loading />}
       <ErrorBox error={d.error} />
       {d.data && (
@@ -461,3 +462,49 @@ function SlackScans() {
   );
 }
 
+// Upload one scan pass file (one channel), preview it, then save it. Nothing is saved by the preview.
+function SlackImport({ onSaved }: { onSaved: () => void }) {
+  const [pass, setPass] = useState<any>(null);
+  const [fileName, setFileName] = useState("");
+  const [fileError, setFileError] = useState("");
+  const [preview, setPreview] = useState<any>(null);
+  const [saved, setSaved] = useState<any>(null);
+  const [signer, setSigner] = useSigner();
+  const s = useSave();
+  const pick = async (file: File | undefined) => {
+    setPass(null); setPreview(null); setSaved(null); setFileError(""); s.clear();
+    if (!file) return;
+    setFileName(file.name);
+    if (file.size > 2 * 1024 * 1024) { setFileError("The file is larger than 2 MB; split the scan into smaller passes."); return; }
+    try { setPass(JSON.parse(await file.text())); } catch { setFileError("This file is not valid JSON."); }
+  };
+  const send = async (dry: boolean) => {
+    let res: any;
+    const ok = await s.run(async () => { res = await post("/slack/import", { pass, dry_run: dry, signer_name: signer }); });
+    if (!ok) return;
+    rememberSigner(signer);
+    if (dry) setPreview(res);
+    else { setSaved(res); setPreview(null); setPass(null); onSaved(); }
+  };
+  const counts = (r: any) => `${r.added} added · ${r.updated} updated · ${r.flagged} flagged for review · ${r.unchanged} unchanged`;
+  return (
+    <Section title="Import a scan">
+      <div className="form-grid">
+        <Field label="Scan file (one channel)" error={fileError} hint="JSON in the sbcg-slack-v1 format. Preview first; nothing is saved until you press Save.">
+          <input type="file" accept=".json,application/json" onChange={(e) => pick(e.target.files?.[0])} />
+        </Field>
+        <SignerField value={signer} onChange={setSigner} error={s.fe("signer_name")} />
+        <ErrorBox error={s.error} />
+        {pass && (
+          <p className="wide">
+            <span className="hint">{fileName}{pass.channel ? ` · ${CHANNEL_LABEL[pass.channel] ?? pass.channel}` : ""}{Array.isArray(pass.findings) ? ` · ${pass.findings.length} findings` : ""}</span>{" "}
+            <button type="button" className="btn small" disabled={s.saving} onClick={() => send(true)}>Preview</button>{" "}
+            {preview && <button type="button" className="btn small primary" disabled={s.saving} onClick={() => send(false)}>Save</button>}
+          </p>
+        )}
+        {preview && <p className="wide">Preview ({CHANNEL_LABEL[preview.channel]}): {counts(preview)}. Nothing saved yet.</p>}
+        {saved && <p className="wide">Saved {CHANNEL_LABEL[saved.channel]}: {counts(saved)}. Check the Review queue.</p>}
+      </div>
+    </Section>
+  );
+}

@@ -51,6 +51,7 @@ export const EXPENSIVE: [RegExp, number, number][] = [
   [/^\/sources\/[^/]+\/lookup$/, 60, H],
   [/^\/pricing-import\/preview$/, 30, H],
   [/^\/revenue\/imports\/manual$/, 30, H],
+  [/^\/slack\/import$/, 60, H],                         // Slack scan import (preview + save)
 ];
 export const LIMITS = {
   login: { limit: 30, windowSec: 600 },        // per client address

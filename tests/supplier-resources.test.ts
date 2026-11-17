@@ -280,6 +280,52 @@ describe("Slack workflow", () => {
   });
 });
 
+describe("Slack scan import from the app (signed-in, no secret)", () => {
+  const finding = (key: string, t: string) => ({ key, kind: "decision", certainty: "confirmed", title: `Decision ${key}`, sources: [src("teammarketing", t)] });
+
+  it("previews without saving, then saves and logs the import under the person's name", async () => {
+    const t = ts();
+    const p = pass("teammarketing", [finding("app-import-decision", t)]);
+    const dry = await call("POST", "/slack/import", { ...S, pass: p, dry_run: true });
+    expect(dry.status).toBe(200);
+    expect(dry.body).toMatchObject({ dry_run: true, channel: "teammarketing", added: 1 });
+    expect(await q("select count(*)::int as n from corporate_actions where finding_key = 'app-import-decision'")).toEqual([{ n: 0 }]);
+    expect(await q("select count(*)::int as n from audit_events where entity_type = 'slack_scan'")).toEqual([{ n: 0 }]);
+
+    const saved = await call("POST", "/slack/import", { ...S, pass: p });
+    expect(saved.body).toMatchObject({ dry_run: false, added: 1 });
+    expect(await q("select count(*)::int as n from corporate_actions where finding_key = 'app-import-decision'")).toEqual([{ n: 1 }]);
+    const log = await q("select signer_name, after from audit_events where entity_type = 'slack_scan' and action = 'import'");
+    expect(log).toHaveLength(1);
+    expect(log[0].signer_name).toBe("Test Person");
+    expect(log[0].after).toMatchObject({ channel: "teammarketing", added: 1 });
+    const scans = await call("GET", "/slack/scans");
+    expect(scans.body.scans.find((x: any) => x.channel_key === "teammarketing").last_counts).toMatchObject({ added: 1 });
+
+    // Same file again (e.g. imported twice, or also sent by the script): nothing changes.
+    expect((await call("POST", "/slack/import", { ...S, pass: p })).body).toMatchObject({ added: 0, unchanged: 1 });
+  });
+
+  it("works with the ingest secret unset, and refuses invalid input, missing signatures and outsiders", async () => {
+    delete process.env.CORPORATE_SLACK_INGEST_SECRET;
+    try {
+      const p = pass("seo", [finding("app-import-no-secret", ts())]);
+      expect((await call("POST", "/slack/import", { ...S, pass: p, dry_run: true })).status).toBe(200);
+      expect((await call("POST", "/slack/import", { pass: p, dry_run: true })).status).toBe(400); // no signature
+      expect((await call("POST", "/slack/import", { ...S })).status).toBe(400); // no file
+      expect((await call("POST", "/slack/import", { ...S, pass: p, dry_run: "yes" })).status).toBe(400);
+      const bad = await call("POST", "/slack/import", { ...S, pass: { schema: "x" } });
+      expect(bad.status).toBe(400);
+      expect(bad.body.error.message).toMatch(/not valid/);
+      expect((await call("POST", "/slack/import", { ...S, pass: p }, { cookie: null })).status).toBe(401);
+      expect((await call("POST", "/slack/import", { ...S, pass: p }, { noCsrf: true })).status).toBe(403);
+      expect(await q("select count(*)::int as n from corporate_actions where finding_key = 'app-import-no-secret'")).toEqual([{ n: 0 }]);
+    } finally {
+      process.env.CORPORATE_SLACK_INGEST_SECRET = SLACK;
+    }
+  });
+});
+
 describe("dashboard summary", () => {
   it("returns only the intended summary fields", async () => {
     await call("POST", "/actions", { ...S, kind: "action", title: "Overdue follow-up", due_date: "2026-01-02" });
