@@ -1,4 +1,3 @@
-import { sampleSignupsReport } from "./lib/sampleSignups";
 import { Router, makeActor, type Ctx } from "./router";
 import { HttpError, json, errorResponse, badRequest } from "./http";
 import { readSession, loginRedirect, handleCallback, logoutResponse, authConfigured, type Session } from "./auth";
@@ -13,6 +12,7 @@ import { pricingImportRoutes } from "./routes/pricingImport";
 import { revenueShopifyRoutes } from "./routes/revenueShopify";
 import { handleIngest } from "./ingestEndpoint";
 import { handleReporting } from "./reportingEndpoint";
+import { sampleSignupsReport } from "./lib/sampleSignups";
 import { readBounded } from "./body";
 
 const router = new Router();
@@ -23,6 +23,7 @@ revenueRoutes(router);
 importRoutes(router);
 pricingImportRoutes(router);
 revenueShopifyRoutes(router);
+// All-time sample box signup count for the Marketplaces page (count only).
 router.get("/sample-signups", async () => sampleSignupsReport());
 
 export type AppOptions = {

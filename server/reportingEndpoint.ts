@@ -1,4 +1,3 @@
-import { sampleSignupsReport } from "./lib/sampleSignups";
 // Read-only reporting API for the Marketing Dashboard's server. Protected by its own private secret
 // (CORPORATE_REPORTING_SECRET), never by the Google login, and separate from the collector's ingest secret.
 //
@@ -7,6 +6,8 @@ import { sampleSignupsReport } from "./lib/sampleSignups";
 //       Figures are exactly the Revenue page's summary (revenueSummary), so both always agree.
 //   GET /api/reporting/v1/pipeline
 //       Marketplace counts by status and provider type, as of now.
+//   GET /api/reporting/v1/sample-signups
+//       All-time count of corporate sample box signups (count only; the signup rows stay in Google Sheets).
 //
 // Returned: stable record ids, a content revision, the reporting month and timezone, the scope, completeness with
 // reason codes, and amounts in cents. Never returned: orders, order lines, customer or billing names, contact
@@ -17,6 +18,7 @@ import { json, errorResponse, HttpError } from "./http";
 import { hit, clientKey } from "./rateLimit";
 import { query, one } from "./db";
 import { revenueSummary } from "./routes/revenueShopify";
+import { sampleSignupsReport } from "./lib/sampleSignups";
 
 export const REPORTING_TIMEZONE = "America/Los_Angeles";
 export const MONTHS_PAGE_MAX = 24;
@@ -135,7 +137,10 @@ export async function handleReporting(req: Request, path: string): Promise<Respo
     if (!ok) return json({ error: { code: "unauthorized", message: "Invalid reporting credential." } }, 401);
     const url = new URL(req.url);
     if (path === "/reporting/v1/months") return json(await monthsReport(url.searchParams));
-    if (path === "/reporting/v1/sample-signups") return json(await sampleSignupsReport());
+    if (path === "/reporting/v1/sample-signups") {
+      if ([...url.searchParams.keys()].length) throw new HttpError(400, "bad_query", "No parameters are accepted.");
+      return json(await sampleSignupsReport());
+    }
     if (path === "/reporting/v1/pipeline") {
       if ([...url.searchParams.keys()].length) throw new HttpError(400, "bad_query", "No parameters are accepted.");
       return json(await pipelineReport());
