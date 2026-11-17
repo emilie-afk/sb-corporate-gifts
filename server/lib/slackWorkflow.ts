@@ -86,7 +86,7 @@ const contentHash = (f: Finding) => createHash("sha256").update(JSON.stringify({
 
 class DryRun extends Error {}
 
-export async function applyPass(input: unknown, opts: { dryRun?: boolean } = {}): Promise<PassResult> {
+export async function applyPass(input: unknown, opts: { dryRun?: boolean; importedBy?: Actor } = {}): Promise<PassResult> {
   const parsed = passSchema.safeParse(input);
   if (!parsed.success) {
     throw new HttpError(400, "payload_rejected", "The scan payload is not valid.", {
@@ -121,6 +121,11 @@ export async function applyPass(input: unknown, opts: { dryRun?: boolean } = {})
         `update slack_scan_state set position_ts = $2, last_success_at = now(), last_attempt_at = now(), last_error = null, last_counts = $3 where channel_key = $1`,
         [pass.channel, position, JSON.stringify({ added: result.added, updated: result.updated, flagged: result.flagged, unchanged: result.unchanged })],
       );
+      // Imports from the app (signed-in session) are logged under the person's name.
+      if (opts.importedBy) {
+        await audit(c, opts.importedBy, { entityType: "slack_scan", entityId: null, action: "import",
+          after: { channel: pass.channel, through_ts: pass.through_ts, added: result.added, updated: result.updated, flagged: result.flagged, unchanged: result.unchanged } });
+      }
       if (opts.dryRun) throw new DryRun();
     });
   } catch (e) {

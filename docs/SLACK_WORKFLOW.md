@@ -26,7 +26,12 @@ The tab also holds the workflow views: **Review queue**, **Follow-ups** (actions
 ## Slack scan passes
 
 A scanner (scheduled task) reads `#seo` and `#teammarketing` separately, classifies corporate gifting messages
-into findings, and posts one pass per channel:
+into findings, and imports one pass per channel. Two ways in, same rules:
+
+- **From the app (no secret):** Supplier Resources → Slack scans → **Import a scan**. A signed-in team member picks
+  the pass file, previews it, then saves. The import is logged under the typed signature and the Google account.
+  `POST /api/slack/import` with `{ pass, dry_run, signer_name }` (session + `x-requested-with: sbg`).
+- **Machine credential (optional):** the bearer endpoint below, enabled only when `CORPORATE_SLACK_INGEST_SECRET` is set.
 
 ```
 POST /api/ingest/slack-findings[?dry_run=1]      Authorization: Bearer <CORPORATE_SLACK_INGEST_SECRET>
@@ -61,7 +66,8 @@ Rules (all in one transaction per pass):
 - A channel's position advances only after its pass is saved. A failed pass saves nothing and records the
   error; the channel's last successful scan time is kept.
 - Answers contain counts and record references only (`added`, `updated`, `flagged`, `unchanged`).
-- `npm run slack:pass -- --file private/pass.json [--dry-run]` sends a pass file from a trusted computer.
+- `npm run slack:pass -- --file private/pass.json [--dry-run]` sends a pass file from a trusted computer (bearer endpoint).
+- Importing the same file twice, or through both ways, changes nothing the second time.
 
 ## Marketing Dashboard
 
