@@ -56,5 +56,6 @@ export const LIMITS = {
   login: { limit: 30, windowSec: 600 },        // per client address
   callback: { limit: 30, windowSec: 600 },     // per client address
   ingest: { limit: 30, windowSec: H },         // per client address (collector sends ~1/week)
+  slack: { limit: 120, windowSec: H },         // per client address (scanner: a few passes per run, plus dry runs)
   writes: { limit: 600, windowSec: 600 },      // all mutations per Google account
 };

@@ -181,6 +181,7 @@ function MarketplaceDetail({ id, nav, onClose, onChanged }: { id: string; nav: N
           <div className="detail-actions">
             <button className="btn small" onClick={() => setModal("edit")}>Edit details</button>
             <button className="btn small" onClick={() => setModal("status")}>{INACTIVE.includes(m.status) ? "Reactivate" : "Change status"}</button>
+            <button className="btn small" onClick={() => nav("resources", { view: "suppliers", supplier: `partner:${m.id}` })}>Resources{d.data.resource_count ? ` (${d.data.resource_count})` : ""}</button>
             <button className="btn ghost small" onClick={() => nav("pricing", { channel: m.channel_id })}>Pricing for {m.name} →</button>
             <button className="btn ghost small" onClick={() => nav("revenue", { channel: m.channel_id })}>Revenue for {m.name} →</button>
           </div>

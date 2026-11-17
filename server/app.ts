@@ -11,6 +11,8 @@ import { importRoutes } from "./routes/imports";
 import { pricingImportRoutes } from "./routes/pricingImport";
 import { revenueShopifyRoutes } from "./routes/revenueShopify";
 import { handleIngest } from "./ingestEndpoint";
+import { handleSlackIngest } from "./slackIngestEndpoint";
+import { supplierRoutes } from "./routes/suppliers";
 import { handleReporting } from "./reportingEndpoint";
 import { sampleSignupsReport } from "./lib/sampleSignups";
 import { readBounded } from "./body";
@@ -23,6 +25,7 @@ revenueRoutes(router);
 importRoutes(router);
 pricingImportRoutes(router);
 revenueShopifyRoutes(router);
+supplierRoutes(router);
 // All-time sample box signup count for the Marketplaces page (count only).
 router.get("/sample-signups", async () => sampleSignupsReport());
 
@@ -57,6 +60,8 @@ export function createApp(opts: AppOptions = {}) {
 
       // ---- collector ingestion (own secret, no Google session)
       if (path === "/ingest/shopify-orders") return await handleIngest(req);
+      // ---- Slack scanner (own secret, no Google session)
+      if (path === "/ingest/slack-findings" || path === "/ingest/slack-state") return await handleSlackIngest(req, path);
       // ---- read-only reporting for the Marketing Dashboard (own secret, no Google session)
       if (path.startsWith("/reporting/")) return await handleReporting(req, path);
 

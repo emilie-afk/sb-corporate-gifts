@@ -17,7 +17,7 @@ const GOOGLE_JWKS = createRemoteJWKSet(new URL("https://www.googleapis.com/oauth
  * secret, whoever holds that credential could sign their own session cookie, so sign-in is refused entirely.
  */
 function sessionSecretCollides(s: string) {
-  return [process.env.CORPORATE_REPORTING_SECRET, process.env.CORPORATE_INGEST_SECRET].some((v) => !!v && v === s);
+  return [process.env.CORPORATE_REPORTING_SECRET, process.env.CORPORATE_INGEST_SECRET, process.env.CORPORATE_SLACK_INGEST_SECRET].some((v) => !!v && v === s);
 }
 
 function secretKey() {

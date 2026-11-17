@@ -29,7 +29,7 @@ export function scanText(text: string, privateTerms: string[] = [], env: NodeJS.
   // Library code contains a few addresses-shaped strings (e.g. "user@host" examples); only flag real-looking ones.
   if (emails.some((e) => !ALLOWED_EMAIL_DOMAINS.test(e) && !/\.(js|css|png|svg)$/i.test(e))) kinds.push("email address");
   // Values of server-only settings must never appear in browser assets.
-  for (const name of ["SESSION_SECRET", "GOOGLE_CLIENT_SECRET", "CORPORATE_INGEST_SECRET", "DATABASE_URL", "NETLIFY_DATABASE_URL", "GOOGLE_SERVICE_ACCOUNT_JSON", "CORPORATE_REPORTING_SECRET", "SHEET_READER_KEY", "SHEET_READER_URL", "SAMPLE_SIGNUP_SHEET_ID"]) {
+  for (const name of ["SESSION_SECRET", "GOOGLE_CLIENT_SECRET", "CORPORATE_INGEST_SECRET", "DATABASE_URL", "NETLIFY_DATABASE_URL", "GOOGLE_SERVICE_ACCOUNT_JSON", "CORPORATE_REPORTING_SECRET", "SHEET_READER_KEY", "SHEET_READER_URL", "SAMPLE_SIGNUP_SHEET_ID", "CORPORATE_SLACK_INGEST_SECRET"]) {
     const v = env[name];
     if (v && v.length >= 8 && text.includes(v)) kinds.push(`value of ${name}`);
   }

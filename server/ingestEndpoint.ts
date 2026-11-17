@@ -12,7 +12,7 @@ function secretOk(header: string | null) {
   const secret = process.env.CORPORATE_INGEST_SECRET ?? "";
   if (secret.length < 32) return "disabled" as const;
   // Fail closed: equal to the reporting credential, it would let the reporting holder write imports.
-  if (secret === process.env.CORPORATE_REPORTING_SECRET) return "disabled" as const;
+  if (secret === process.env.CORPORATE_REPORTING_SECRET || secret === process.env.CORPORATE_SLACK_INGEST_SECRET) return "disabled" as const;
   const m = /^Bearer (.+)$/.exec(header ?? "");
   if (!m) return false;
   const a = createHash("sha256").update(m[1]).digest(), b = createHash("sha256").update(secret).digest();
