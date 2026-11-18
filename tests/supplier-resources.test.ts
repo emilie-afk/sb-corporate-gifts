@@ -355,6 +355,56 @@ describe("Corporate Gifts tasks: delivery through the Marketing Dashboard", () =
     expect((await call("POST", `/task-requests/${t.id}/dismiss`, { ...S, version: row.version })).status).toBe(400);
   });
 
+  it("Resolve here: handled without a task; leaves To review; the dashboard reads it on the same id; nothing reopens it", async () => {
+    const echo = partners["Demo Market Echo"].id;
+    const t = (await call("POST", "/task-requests", { ...S, title: "Answer Echo's packaging question", marketplace_ids: [echo] })).body.task;
+    const before = (await call("GET", "/task-requests?status=review")).body.to_review;
+    expect((await call("POST", `/task-requests/${t.id}/resolve`, { ...S, version: t.version + 1 })).status).toBe(409);   // stale form
+    const r = await call("POST", `/task-requests/${t.id}/resolve`, { ...S, version: t.version });
+    expect(r.body.task).toMatchObject({ delivery_status: "resolved", resolved_in: "corporate_gifts", resolved_by: "Test Person" });
+    const after = (await call("GET", "/task-requests?status=review")).body;
+    expect(after.to_review).toBe(before - 1);
+    expect(after.tasks.map((x: any) => x.id)).not.toContain(t.id);
+    expect((await call("GET", "/task-requests?status=active")).body.tasks.map((x: any) => x.id)).not.toContain(t.id);
+    // The dashboard's next read (since its last one) gets the same request as resolved, and the shared capability.
+    const feed = (await tasksReport(`?since=${encodeURIComponent(new Date(Date.now() - 60_000).toISOString())}`)).body;
+    expect(feed.capabilities).toEqual(["resolved"]);
+    expect(feed.tasks.find((x: any) => x.id === t.id)).toMatchObject({ delivery_status: "resolved" });
+    expect((await tasksReport()).body.tasks.find((x: any) => x.id === t.id)).toBeUndefined();          // not offered as pending
+    // Repeated clicks and stale receipts never reopen it.
+    expect((await call("POST", `/task-requests/${t.id}/resolve`, { ...S, version: r.body.task.version })).status).toBe(400);
+    expect((await call("POST", `/task-requests/${t.id}/dismiss`, { ...S, version: r.body.task.version })).status).toBe(400);
+    for (const state of ["in_review", "failed", "dismissed", "resolved"])
+      expect((await receipt({ receipts: [{ id: t.id, content_version: 1, state, ...(state === "failed" ? { error: "x" } : {}) }] })).body).toMatchObject({ ignored: 1 });
+    expect((await q("select delivery_status from corporate_task_requests where id = $1", [t.id]))[0].delivery_status).toBe("resolved");
+  });
+
+  it("Resolve in the dashboard: a 'resolved' receipt on the same id closes it here; a stale form can't act on it", async () => {
+    const echo = partners["Demo Market Echo"].id;
+    const t = (await call("POST", "/task-requests", { ...S, title: "Check Echo's invoice format", marketplace_ids: [echo] })).body.task;
+    await receipt({ receipts: [{ id: t.id, content_version: 1, state: "in_review" }] });
+    const before = (await call("GET", "/task-requests?status=review")).body.to_review;
+    expect((await receipt({ receipts: [{ id: t.id, content_version: 1, state: "resolved" }] })).body).toMatchObject({ applied: 1 });
+    const row = (await q("select * from corporate_task_requests where id = $1", [t.id]))[0];
+    expect(row).toMatchObject({ delivery_status: "resolved", resolved_in: "dashboard", resolved_by: "Marketing Dashboard" });
+    expect((await call("GET", "/task-requests?status=review")).body.to_review).toBe(before - 1);
+    expect((await call("POST", `/task-requests/${t.id}/resolve`, { ...S, version: t.version })).status).toBe(409);          // opened before the receipt
+    expect((await receipt({ receipts: [{ id: t.id, content_version: 1, state: "resolved" }] })).body).toMatchObject({ ignored: 1 });
+  });
+
+  it("racing with task creation: a task that already exists in Task Tracker wins over a resolution, with its status and link", async () => {
+    const echo = partners["Demo Market Echo"].id;
+    const t = (await call("POST", "/task-requests", { ...S, title: "Ship Echo's November samples", marketplace_ids: [echo] })).body.task;
+    await call("POST", `/task-requests/${t.id}/resolve`, { ...S, version: t.version });
+    // The dashboard had already created the task (its send was in flight): it reports the task.
+    await receipt({ receipts: [{ id: t.id, content_version: 1, state: "delivered", tracker: { task_id: "trk-race", status: "open", open_url: "https://tracker.example.test/#/tasks/trk-race" } }] });
+    const row = (await q("select * from corporate_task_requests where id = $1", [t.id]))[0];
+    expect(row).toMatchObject({ delivery_status: "delivered", tracker_task_id: "trk-race", tracker_status: "open", tracker_open_url: "https://tracker.example.test/#/tasks/trk-race", resolved_in: "corporate_gifts" });
+    expect(row.resolved_at).not.toBeNull();
+    expect((await call("POST", `/task-requests/${row.id}/resolve`, { ...S, version: row.version })).status).toBe(400);   // complete it in Task Tracker
+    expect((await q("select count(*)::int as n from corporate_task_requests where title = $1", ["Ship Echo's November samples"]))).toEqual([{ n: 1 }]);
+  });
+
   it("receipts accept only delivery facts, with the reporting credential", async () => {
     expect((await receipt({ receipts: [] })).status).toBe(400);
     expect((await receipt({ receipts: [{ id: "00000000-0000-4000-8000-000000000001", content_version: 1, state: "dismissed", title: "x" }] })).status).toBe(400);
@@ -406,7 +456,8 @@ describe("dashboard summary", () => {
     expect(r.status).toBe(200);
     expect(Object.keys(r.body).sort()).toEqual(["as_of", "follow_ups", "id", "ok", "recent", "sample_progress", "schema_version", "source", "today"]);
     expect(r.body.follow_ups.overdue).toBeGreaterThanOrEqual(1);
-    const openTasks = (await q("select count(*)::int as n from corporate_task_requests where slack_status = 'open' and delivery_status <> 'dismissed' and coalesce(tracker_status, 'open') = 'open'"))[0].n;
+    const openTasks = (await q("select count(*)::int as n from corporate_task_requests where slack_status = 'open' and delivery_status not in ('dismissed', 'resolved') and coalesce(tracker_status, 'open') = 'open'"))[0].n;
+    expect(openTasks).toBeLessThan((await q("select count(*)::int as n from corporate_task_requests where slack_status = 'open' and delivery_status <> 'dismissed' and coalesce(tracker_status, 'open') = 'open'"))[0].n);   // resolved ones are not open work
     const openActions = (await q("select count(*)::int as n from corporate_actions where kind = 'action' and status = 'open' and excluded_at is null"))[0].n;
     expect(r.body.follow_ups.open).toBe(openTasks + openActions);
     for (const x of r.body.recent) expect(Object.keys(x).sort()).toEqual(["at", "id", "kind", "status", "supplier", "title"]);

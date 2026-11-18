@@ -31,7 +31,7 @@ const resourceFields = {
 export const TASK_COLS = `t.id, t.task_key, t.title, t.brief, t.owner_hint, t.due_date, t.slack_status, t.marketplace_ids,
   (select array_agg(m.name order by m.name) from marketplaces m where m.id = any(t.marketplace_ids)) as marketplace_names,
   t.source_refs, t.content_version, t.delivery_status, t.delivery_error, t.delivered_version, t.tracker_task_id, t.tracker_status,
-  t.tracker_assignee, t.tracker_due_date, t.tracker_open_url, t.delivered_at, t.origin, t.created_by, t.created_at, t.updated_at, t.version`;
+  t.tracker_assignee, t.tracker_due_date, t.tracker_open_url, t.delivered_at, t.resolved_at, t.resolved_by, t.resolved_in, t.origin, t.created_by, t.created_at, t.updated_at, t.version`;
 
 const SUPPLIER_JOIN = `
   left join marketplaces m on m.id = r.marketplace_id
@@ -94,7 +94,7 @@ export function supplierRoutes(r: Router) {
     const partners = await query(
       `select 'partner:' || s.id as ref, 'partner' as kind, s.id, s.name, s.provider_type, s.status, s.sales_role, s.application_status,
          ${counts.replace(/%COL%/g, "marketplace_id")},
-         (select count(*) from corporate_task_requests t where s.id = any(t.marketplace_ids) and t.delivery_status <> 'dismissed' and t.slack_status = 'open')::int as open_tasks
+         (select count(*) from corporate_task_requests t where s.id = any(t.marketplace_ids) and t.delivery_status not in ('dismissed', 'resolved') and t.slack_status = 'open')::int as open_tasks
        from marketplaces s order by s.name`);
     const vendors = await query(
       `select 'vendor:' || s.id as ref, 'vendor' as kind, s.id, s.name, s.website_url, s.note, s.version, ${counts.replace(/%COL%/g, "vendor_id")}
@@ -158,7 +158,7 @@ export function supplierRoutes(r: Router) {
     const actions = await query(`select id, kind, title, owner, due_date, status from corporate_actions where ${col} = $1 and excluded_at is null order by status, due_date nulls last, created_at`, [s.id]);
     const samples = await query(`select id, label, status, status_on from sample_requests where ${col} = $1 and excluded_at is null order by updated_at desc`, [s.id]);
     const tasks = s.kind === "partner"
-      ? await query(`select ${TASK_COLS} from corporate_task_requests t where $1 = any(t.marketplace_ids) and t.delivery_status <> 'dismissed' order by (t.slack_status = 'open') desc, t.due_date nulls last, t.created_at desc`, [s.id])
+      ? await query(`select ${TASK_COLS} from corporate_task_requests t where $1 = any(t.marketplace_ids) and t.delivery_status not in ('dismissed', 'resolved') order by (t.slack_status = 'open') desc, t.due_date nulls last, t.created_at desc`, [s.id])
       : [];
     const m = s.kind === "partner" ? await one("select status, sales_role, application_status, application_date, aliases from marketplaces where id = $1", [s.id]) : null;
     return { supplier: { ref: refString(s), kind: s.kind, id: sup.id, name: sup.name, ...(m ?? {}) }, resources, requirements, actions, samples, tasks };
@@ -342,15 +342,19 @@ export function supplierRoutes(r: Router) {
 
   // ------------------------------------------------------- Corporate Gifts tasks
   // Requests become Task Tracker tasks through the Marketing Dashboard (reviewed and assigned there). Here: list,
-  // add one by hand, retry a failed delivery (same id, so never a second task), or dismiss one not yet delivered.
+  // add one by hand, retry a failed delivery (same id, so never a second task), resolve one handled without a task,
+  // or dismiss one that needs no action. "To review" = waiting for the dashboard, in review there, or failed.
   r.get("/task-requests", async ({ query: q }) => {
     const status = q.get("status") ?? "active";
-    if (!["active", "all"].includes(status)) throw badRequest("status must be active or all");
+    if (!["review", "active", "all"].includes(status)) throw badRequest("status must be review, active or all");
+    const where = status === "review" ? "where t.delivery_status in ('pending', 'in_review', 'failed')"
+      : status === "active" ? "where t.delivery_status not in ('dismissed', 'resolved')" : "";
     const rows = await query(
       `select ${TASK_COLS}, (t.slack_status = 'open' and t.due_date is not null and t.due_date < $1::date and coalesce(t.tracker_status, 'open') = 'open') as overdue
-       from corporate_task_requests t ${status === "active" ? "where t.delivery_status <> 'dismissed'" : ""}
+       from corporate_task_requests t ${where}
        order by (t.delivery_status in ('failed', 'pending', 'in_review')) desc, t.due_date nulls last, t.created_at desc`, [businessToday()]);
-    return { tasks: rows };
+    const toReview = (await one("select count(*)::int as n from corporate_task_requests where delivery_status in ('pending', 'in_review', 'failed')"))!.n;
+    return { tasks: rows, to_review: toReview };
   });
 
   r.post("/task-requests", async ({ body, actor }) => {
@@ -400,8 +404,31 @@ export function supplierRoutes(r: Router) {
       if (!row) throw notFound("Task");
       if (row.version !== d.version) throw conflict("This task changed since you opened it. Reload and try again.");
       if (row.delivery_status === "delivered") throw badRequest("This task is already in Task Tracker; close it there.");
+      if (row.delivery_status === "resolved") throw badRequest("This task was already resolved.");
+      if (row.delivery_status === "dismissed") throw badRequest("This task was already dismissed.");
       const after = (await c.query(`update corporate_task_requests set delivery_status = 'dismissed', updated_at = now(), version = version + 1 where id = $1 returning *`, [params.id])).rows[0];
       await audit(c, a, { entityType: "corporate_task_request", entityId: params.id, action: "dismiss", before: { delivery_status: row.delivery_status } });
+      return { task: after };
+    });
+  });
+
+  // Resolve: handled without a task. Same request id as in the Marketing Dashboard, which closes its draft on its next
+  // read (if a task already exists there, the task wins and this request becomes "delivered" with its link).
+  r.post("/task-requests/:id/resolve", async ({ params, body, actor }) => {
+    const b = await body();
+    const a = actor(b);
+    assertUuid(params.id);
+    const d = parse(z.object({ version }), b);
+    return tx(async (c) => {
+      const row = await one("select * from corporate_task_requests where id = $1 for update", [params.id], c);
+      if (!row) throw notFound("Task");
+      if (row.version !== d.version) throw conflict("This task changed since you opened it. Reload and try again.");
+      if (row.delivery_status === "delivered") throw badRequest("This task is already in Task Tracker; complete it there.");
+      if (row.delivery_status === "resolved") throw badRequest("This task was already resolved.");
+      if (row.delivery_status === "dismissed") throw badRequest("This task was dismissed.");
+      const after = (await c.query(`update corporate_task_requests set delivery_status = 'resolved', delivery_error = null, resolved_at = now(), resolved_by = $2, resolved_in = 'corporate_gifts',
+                                      updated_at = now(), version = version + 1 where id = $1 returning *`, [params.id, a.signer])).rows[0];
+      await audit(c, a, { entityType: "corporate_task_request", entityId: params.id, action: "resolve", before: { delivery_status: row.delivery_status }, after: { delivery_status: "resolved" } });
       return { task: after };
     });
   });
