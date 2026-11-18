@@ -1,9 +1,9 @@
-# Supplier Resources and the Slack workflow
+# Marketplace Resources and the Slack workflow
 
-**Supplier Resources** keeps each supplier's catalogs, price sheets, gift options and terms, assets, decisions and follow-ups in one place. Replacing a resource keeps the earlier version in the supplier's history. Every change is audited.
+**Marketplace Resources** keeps each sales partner's catalogs, price sheets, gift options and terms, assets, and decisions in one place. Partners are the records in Marketplaces that sell, or are being pursued to sell, the company's corporate gifts. Replacing a resource keeps the earlier version in the partner's history. Every change is audited.
 
-A scheduled scanner reads the team's Slack conversations about corporate gifting and turns them into suggested updates: new resources, sample progress, decisions and follow-ups. A signed-in team member can preview and import a scan, or the scanner can send it with its own credential. Anything uncertain, or anything that can't be matched to exactly one supplier, goes to a review queue instead of changing records. Importing the same scan twice changes nothing.
+A scheduled scanner reads the team's Slack conversations about corporate gifting and turns them into suggested changes for those partners: status updates, new resources, and tasks. A signed-in team member previews a scan, which lists the exact changes, and then imports it. Discussions about product suppliers or companies outside Marketplaces are skipped. Conflicting information about a partner goes to a review queue instead of changing records. Importing the same scan twice changes nothing.
 
-The Marketing Dashboard receives summary counts only (sample progress, open follow-ups, recent decisions). It never receives files, terms, contacts or messages.
+Tasks go to the Marketing Dashboard for review and assignment, then appear in Marketing Tasks. The dashboard otherwise receives summary counts only. It never receives files, terms, contacts or messages.
 
 Field definitions, endpoints and channel settings are kept in the team's private operator guide.

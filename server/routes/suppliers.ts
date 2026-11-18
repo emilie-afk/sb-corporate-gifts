@@ -1,4 +1,4 @@
-// Supplier Resources, vendors, open actions/blockers, sample workflow, the Slack review queue and scan status.
+// Marketplace Resources (partners, product vendors kept for history), Corporate Gifts tasks, follow-ups, samples, the review queue and scan status.
 // Signed-in team members (the approved Google login) can read and edit everything here; every change is audited
 // with the typed signature and the verified Google account.
 import { z } from "zod";
@@ -6,7 +6,9 @@ import type pg from "pg";
 import { Router, updateVersioned } from "../router";
 import { query, one, tx, getPool } from "../db";
 import { audit, diff, type Actor } from "../audit";
-import { badRequest, notFound } from "../http";
+import { badRequest, notFound, conflict } from "../http";
+import { INACTIVE_REASONS } from "./marketplaces";
+import { setRelationshipStatus, setApplication } from "../lib/slackWorkflow";
 import { parse, text, reqText, displayName, url, date, version, assertUuid, defined } from "../validate";
 import {
   RESOURCE_TYPES, RESOURCE_TYPE_KEYS, SAMPLE_STATUSES, parseSupplierRef, requireSupplier, refColumns, refString,
@@ -25,6 +27,11 @@ const resourceFields = {
   requirement_id: z.string().uuid().nullable().optional(),
   action_id: z.string().uuid().nullable().optional(),
 };
+
+export const TASK_COLS = `t.id, t.task_key, t.title, t.brief, t.owner_hint, t.due_date, t.slack_status, t.marketplace_ids,
+  (select array_agg(m.name order by m.name) from marketplaces m where m.id = any(t.marketplace_ids)) as marketplace_names,
+  t.source_refs, t.content_version, t.delivery_status, t.delivery_error, t.delivered_version, t.tracker_task_id, t.tracker_status,
+  t.tracker_assignee, t.tracker_due_date, t.tracker_open_url, t.delivered_at, t.origin, t.created_by, t.created_at, t.updated_at, t.version`;
 
 const SUPPLIER_JOIN = `
   left join marketplaces m on m.id = r.marketplace_id
@@ -82,10 +89,12 @@ export function supplierRoutes(r: Router) {
   // ------------------------------------------------------------- suppliers
   r.get("/suppliers", async () => {
     const counts = `
-      (select count(*) from supplier_resources x where x.%COL% = s.id and x.removed_at is null and x.status = 'current')::int as current_resources,
-      (select count(*) from supplier_resources x where x.%COL% = s.id and x.removed_at is null and x.status = 'superseded')::int as superseded_resources`;
+      (select count(*) from supplier_resources x where x.%COL% = s.id and x.removed_at is null and x.excluded_at is null and x.status = 'current')::int as current_resources,
+      (select count(*) from supplier_resources x where x.%COL% = s.id and x.removed_at is null and x.excluded_at is null and x.status = 'superseded')::int as superseded_resources`;
     const partners = await query(
-      `select 'partner:' || s.id as ref, 'partner' as kind, s.id, s.name, s.provider_type, s.status, ${counts.replace(/%COL%/g, "marketplace_id")}
+      `select 'partner:' || s.id as ref, 'partner' as kind, s.id, s.name, s.provider_type, s.status, s.sales_role, s.application_status,
+         ${counts.replace(/%COL%/g, "marketplace_id")},
+         (select count(*) from corporate_task_requests t where s.id = any(t.marketplace_ids) and t.delivery_status <> 'dismissed' and t.slack_status = 'open')::int as open_tasks
        from marketplaces s order by s.name`);
     const vendors = await query(
       `select 'vendor:' || s.id as ref, 'vendor' as kind, s.id, s.name, s.website_url, s.note, s.version, ${counts.replace(/%COL%/g, "vendor_id")}
@@ -141,14 +150,18 @@ export function supplierRoutes(r: Router) {
        from supplier_resources r ${SUPPLIER_JOIN}
        left join requirements rq on rq.id = r.requirement_id
        left join corporate_actions ac on ac.id = r.action_id
-       where r.${col} = $1 and r.removed_at is null
+       where r.${col} = $1 and r.removed_at is null and r.excluded_at is null
        order by r.section, r.status, coalesce(r.effective_date, r.last_confirmed_on, r.created_at::date) desc, r.created_at desc`, [s.id]);
     const requirements = s.kind === "partner"
       ? await query("select id, category, requirement, confirmation_state from requirements where marketplace_id = $1 and removed_at is null order by created_at", [s.id])
       : [];
-    const actions = await query(`select id, kind, title, owner, due_date, status from corporate_actions where ${col} = $1 order by status, due_date nulls last, created_at`, [s.id]);
-    const samples = await query(`select id, label, status, status_on from sample_requests where ${col} = $1 order by updated_at desc`, [s.id]);
-    return { supplier: { ref: refString(s), kind: s.kind, id: sup.id, name: sup.name }, resources, requirements, actions, samples };
+    const actions = await query(`select id, kind, title, owner, due_date, status from corporate_actions where ${col} = $1 and excluded_at is null order by status, due_date nulls last, created_at`, [s.id]);
+    const samples = await query(`select id, label, status, status_on from sample_requests where ${col} = $1 and excluded_at is null order by updated_at desc`, [s.id]);
+    const tasks = s.kind === "partner"
+      ? await query(`select ${TASK_COLS} from corporate_task_requests t where $1 = any(t.marketplace_ids) and t.delivery_status <> 'dismissed' order by (t.slack_status = 'open') desc, t.due_date nulls last, t.created_at desc`, [s.id])
+      : [];
+    const m = s.kind === "partner" ? await one("select status, sales_role, application_status, application_date, aliases from marketplaces where id = $1", [s.id]) : null;
+    return { supplier: { ref: refString(s), kind: s.kind, id: sup.id, name: sup.name, ...(m ?? {}) }, resources, requirements, actions, samples, tasks };
   });
 
   r.post("/supplier-resources", async ({ body, actor }) => {
@@ -201,7 +214,7 @@ export function supplierRoutes(r: Router) {
     if (!["open", "all"].includes(status)) throw badRequest("status must be open or all");
     const rows = await query(
       `select r.*, ${supplierCols()}, (r.status = 'open' and r.due_date is not null and r.due_date < $1::date) as overdue
-       from corporate_actions r ${SUPPLIER_JOIN} ${status === "open" ? "where r.status = 'open'" : ""}
+       from corporate_actions r ${SUPPLIER_JOIN} where r.excluded_at is null ${status === "open" ? "and r.status = 'open'" : ""}
        order by (r.status = 'open') desc, r.due_date nulls last, r.created_at desc`, [businessToday()]);
     return { actions: rows.map((x: any) => ({ ...x, supplier: x.marketplace_id || x.vendor_id ? x.supplier : null })) };
   });
@@ -244,7 +257,7 @@ export function supplierRoutes(r: Router) {
 
   // ------------------------------------------------------------- samples
   r.get("/samples", async () => ({
-    samples: (await query(`select r.*, ${supplierCols()} from sample_requests r ${SUPPLIER_JOIN} order by r.updated_at desc`))
+    samples: (await query(`select r.*, ${supplierCols()} from sample_requests r ${SUPPLIER_JOIN} where r.excluded_at is null order by r.updated_at desc`))
       .map((x: any) => ({ ...x, supplier: x.marketplace_id || x.vendor_id ? x.supplier : null })),
   }));
 
@@ -284,19 +297,112 @@ export function supplierRoutes(r: Router) {
     return { items: await query(`select * from review_items ${status === "all" ? "" : "where status = $1"} order by created_at desc`, status === "all" ? [] : [status]) };
   });
 
-  r.patch("/review-items/:id", async ({ params, body, actor }) => {
+  // Apply one of the item's proposed changes (e.g. "Apply status: Live"); the item closes only when the change is saved.
+  r.post("/review-items/:id/apply", async ({ params, body, actor }) => {
     const b = await body();
     const a = actor(b);
     assertUuid(params.id);
-    const d = parse(z.object({ status: z.enum(["open", "resolved", "dismissed"]), resolution_note: text(2000), version }), b);
-    if (d.status !== "open" && !d.resolution_note) throw badRequest("Say how it was resolved.", { fields: { resolution_note: "Required" } });
+    const d = parse(z.object({ option: z.number().int().min(0).max(9), reason: z.enum(INACTIVE_REASONS).nullable().optional(), note: text(2000), version }), b);
     return tx(async (c) => {
-      const { before, after } = await updateVersioned(c, "review_items", params.id, d.version, {
-        status: d.status, resolution_note: d.resolution_note ?? null,
-        resolved_by: d.status === "open" ? null : a.signer, resolved_at: d.status === "open" ? null : new Date(),
-      });
-      await audit(c, a, { entityType: "review_item", entityId: params.id, action: "update", ...diff(before, after) });
+      const item = await one("select * from review_items where id = $1 for update", [params.id], c);
+      if (!item) throw notFound("Review item");
+      if (item.version !== d.version) throw conflict("This item changed since you opened it. Reload and try again.");
+      if (item.status !== "open") throw badRequest("This item is already closed.");
+      const opt = (item.options ?? [])[d.option];
+      if (item.format !== 2 || !opt || !item.marketplace_id) throw badRequest("This item has no change to apply. Dismiss it instead.");
+      const detail = `Review decision: ${item.title}${d.note ? `\n${d.note}` : ""}`;
+      let applied: any;
+      if (opt.change.field === "relationship_status") applied = await setRelationshipStatus(c, a, item.marketplace_id, opt.change.to, detail, d.reason ?? null, new Date());
+      else applied = await setApplication(c, a, item.marketplace_id, { [opt.change.field]: opt.change.to }, detail, new Date());
+      const after = (await c.query(
+        `update review_items set status = 'resolved', resolution = 'applied', resolution_note = $2, resolved_by = $3, resolved_at = now(), updated_at = now(), version = version + 1
+         where id = $1 returning *`, [params.id, `${opt.label}${d.note ? ` — ${d.note}` : ""}`, a.signer])).rows[0];
+      await audit(c, a, { entityType: "review_item", entityId: params.id, marketplaceId: item.marketplace_id, action: "apply", after: { option: opt.label, applied: applied ?? "already set", sources: item.sources } });
       return { item: after };
+    });
+  });
+
+  r.post("/review-items/:id/dismiss", async ({ params, body, actor }) => {
+    const b = await body();
+    const a = actor(b);
+    assertUuid(params.id);
+    const d = parse(z.object({ note: text(2000), version }), b);
+    return tx(async (c) => {
+      const item = await one("select * from review_items where id = $1 for update", [params.id], c);
+      if (!item) throw notFound("Review item");
+      if (item.version !== d.version) throw conflict("This item changed since you opened it. Reload and try again.");
+      if (item.status !== "open") throw badRequest("This item is already closed.");
+      const after = (await c.query(
+        `update review_items set status = 'dismissed', resolution = 'dismissed', resolution_note = $2, resolved_by = $3, resolved_at = now(), updated_at = now(), version = version + 1
+         where id = $1 returning *`, [params.id, d.note ?? "Dismissed", a.signer])).rows[0];
+      await audit(c, a, { entityType: "review_item", entityId: params.id, marketplaceId: item.marketplace_id ?? null, action: "dismiss", after: { note: d.note ?? null } });
+      return { item: after };
+    });
+  });
+
+  // ------------------------------------------------------- Corporate Gifts tasks
+  // Requests become Task Tracker tasks through the Marketing Dashboard (reviewed and assigned there). Here: list,
+  // add one by hand, retry a failed delivery (same id, so never a second task), or dismiss one not yet delivered.
+  r.get("/task-requests", async ({ query: q }) => {
+    const status = q.get("status") ?? "active";
+    if (!["active", "all"].includes(status)) throw badRequest("status must be active or all");
+    const rows = await query(
+      `select ${TASK_COLS}, (t.slack_status = 'open' and t.due_date is not null and t.due_date < $1::date and coalesce(t.tracker_status, 'open') = 'open') as overdue
+       from corporate_task_requests t ${status === "active" ? "where t.delivery_status <> 'dismissed'" : ""}
+       order by (t.delivery_status in ('failed', 'pending', 'in_review')) desc, t.due_date nulls last, t.created_at desc`, [businessToday()]);
+    return { tasks: rows };
+  });
+
+  r.post("/task-requests", async ({ body, actor }) => {
+    const b = await body();
+    const a = actor(b);
+    const d = parse(z.object({
+      title: displayName(300), brief: text(1500), owner_hint: text(80), due_date: date,
+      marketplace_ids: z.array(z.string().uuid()).min(1, "Choose at least one marketplace").max(20),
+    }), b);
+    return tx(async (c) => {
+      const ids = [...new Set(d.marketplace_ids)];
+      const ok = (await c.query("select id from marketplaces where id = any($1) and sales_role = 'confirmed'", [ids])).rows.length;
+      if (ok !== ids.length) throw badRequest("Choose marketplaces that sell our corporate gifts.", { fields: { marketplace_ids: "Not eligible" } });
+      const key = `manual-${(await c.query("select gen_random_uuid() as k")).rows[0].k}`;
+      const row = (await c.query(
+        `insert into corporate_task_requests (task_key, title, brief, owner_hint, due_date, marketplace_ids, origin, created_by)
+         values ($1,$2,$3,$4,$5,$6,'manual',$7) returning *`,
+        [key, d.title, d.brief ?? null, d.owner_hint ?? null, d.due_date ?? null, ids, a.signer])).rows[0];
+      await audit(c, a, { entityType: "corporate_task_request", entityId: row.id, action: "create", after: row });
+      return { task: row };
+    });
+  });
+
+  r.post("/task-requests/:id/retry", async ({ params, body, actor }) => {
+    const b = await body();
+    const a = actor(b);
+    assertUuid(params.id);
+    const d = parse(z.object({ version }), b);
+    return tx(async (c) => {
+      const row = await one("select * from corporate_task_requests where id = $1 for update", [params.id], c);
+      if (!row) throw notFound("Task");
+      if (row.version !== d.version) throw conflict("This task changed since you opened it. Reload and try again.");
+      if (row.delivery_status !== "failed") throw badRequest("Only a failed delivery can be retried.");
+      const after = (await c.query(`update corporate_task_requests set delivery_status = 'pending', delivery_error = null, updated_at = now(), version = version + 1 where id = $1 returning *`, [params.id])).rows[0];
+      await audit(c, a, { entityType: "corporate_task_request", entityId: params.id, action: "retry_delivery", before: { delivery_status: "failed" }, after: { delivery_status: "pending" } });
+      return { task: after };
+    });
+  });
+
+  r.post("/task-requests/:id/dismiss", async ({ params, body, actor }) => {
+    const b = await body();
+    const a = actor(b);
+    assertUuid(params.id);
+    const d = parse(z.object({ version }), b);
+    return tx(async (c) => {
+      const row = await one("select * from corporate_task_requests where id = $1 for update", [params.id], c);
+      if (!row) throw notFound("Task");
+      if (row.version !== d.version) throw conflict("This task changed since you opened it. Reload and try again.");
+      if (row.delivery_status === "delivered") throw badRequest("This task is already in Task Tracker; close it there.");
+      const after = (await c.query(`update corporate_task_requests set delivery_status = 'dismissed', updated_at = now(), version = version + 1 where id = $1 returning *`, [params.id])).rows[0];
+      await audit(c, a, { entityType: "corporate_task_request", entityId: params.id, action: "dismiss", before: { delivery_status: row.delivery_status } });
+      return { task: after };
     });
   });
 

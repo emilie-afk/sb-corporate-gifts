@@ -37,6 +37,12 @@ const detailsSchema = z.object({
   description: text(4000),
   priority_note: text(200),
   initial_action: text(2000),
+  // Marketplace Resources: whether the record sells (or is being pursued to sell) our corporate gifts; verified
+  // alternative names for Slack matching; application status/date (tracked separately from the relationship status).
+  sales_role: z.enum(["confirmed", "unclear"]).optional(),
+  aliases: z.array(displayName(120)).max(10).optional(),
+  application_status: z.enum(["not_applied", "preparing", "submitted", "under_review", "approved", "rejected", "withdrawn"]).nullable().optional(),
+  application_date: date,
 });
 
 async function loadMarketplace(id: string) {
@@ -139,7 +145,7 @@ export function marketplaceRoutes(r: Router) {
       ),
       one("select * from channels where id = $1", [m.channel_id]),
     ]);
-    // Number of current Supplier Resources for the "Resources" shortcut on this record.
+    // Number of current Marketplace Resources for the "Resources" shortcut on this record.
     const rc = await one("select count(*)::int as n from supplier_resources where marketplace_id = $1 and status = 'current' and removed_at is null", [m.id]);
     return { marketplace: m, channel, milestones, requirements, communications, products, statusHistory, milestoneHistory: history, resource_count: rc?.n ?? 0 };
   });
@@ -151,6 +157,8 @@ export function marketplaceRoutes(r: Router) {
     const d = defined(parse(detailsSchema.extend({ version }), b));
     const { version: v, ...fields } = d as any;
     if ("status" in b) throw badRequest("Use Change status to change the status.");
+    if (fields.aliases) fields.aliases = [...new Set((fields.aliases as string[]).map((x) => x.replace(/\s+/g, " ").trim()))];
+    if ("application_status" in fields || "application_date" in fields) fields.application_updated_at = new Date();
     return tx(async (c) => {
       const { before, after } = await updateVersioned(c, "marketplaces", params.id, v, fields);
       if (fields.name && fields.name !== before.name) await c.query("update channels set name = $1, updated_at = now() where id = $2", [fields.name, before.channel_id]);
@@ -185,7 +193,7 @@ export function marketplaceRoutes(r: Router) {
       if (m.status === d.to_status) throw badRequest("The marketplace already has that status.");
       if (isInactive(d.to_status) && !d.reason) throw badRequest("A reason is required for this status.", { fields: { reason: "Required" } });
       const after = await c.query(
-        "update marketplaces set status = $2, updated_at = now(), version = version + 1 where id = $1 returning *",
+        "update marketplaces set status = $2, status_evidence_at = now(), updated_at = now(), version = version + 1 where id = $1 returning *",
         [params.id, d.to_status],
       );
       const hist = await c.query(
