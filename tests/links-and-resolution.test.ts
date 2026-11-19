@@ -130,17 +130,18 @@ describe("resource links from Slack", () => {
 describe("routing and resolution", () => {
   const taskF = (id: string, owner: string | undefined, partner = "Demo Market Delta") => ({ ...sel, key: id, type: "task", task_id: id, partners: [{ names: [partner] }], title: `Fictional action ${id}`, ...(owner ? { owner } : {}), sources: [src("seo", ts())] });
 
-  it("routes by owner: Marketing task, check-off item, or Needs routing", async () => {
+  it("routes by owner: Marketing task, or a check-off item with the names from Slack", async () => {
     const r = await imp(pass("seo", [taskF("t-marketing", "Example Marketer"), taskF("t-ops", "Ops Lead (ops team)"), taskF("t-partner", "Example Partner Rep"), taskF("t-two", "Example Marketer / Example Ops Lead"), taskF("t-none", undefined), taskF("t-unknown", "Someone Else")]));
     expect(r.status).toBe(200);
     const routes = Object.fromEntries(r.body.changes.filter((c: any) => c.type === "task").map((c: any) => [c.title.replace("Fictional action ", ""), c.route]));
-    expect(routes).toEqual({ "t-marketing": "marketing", "t-ops": "checkoff", "t-partner": "checkoff", "t-two": "review", "t-none": "review", "t-unknown": "review" });
+    expect(routes).toEqual({ "t-marketing": "marketing", "t-ops": "checkoff", "t-partner": "checkoff", "t-two": "checkoff", "t-none": "checkoff", "t-unknown": "checkoff" });
     const offered = (await rep("corporate-tasks?v=2")).body.tasks.map((t: any) => t.title);
     expect(offered).toContain("Fictional action t-marketing");
     expect(offered).not.toContain("Fictional action t-ops");
     const checks = (await rep("corporate-checkoffs")).body;
     expect(checks.items.find((x: any) => x.title === "Fictional action t-ops")).toMatchObject({ route: "checkoff", owner: "Example Ops Lead", state: "open" });
-    expect(checks.items.find((x: any) => x.title === "Fictional action t-none")).toMatchObject({ route: "review" });
+    expect(checks.items.find((x: any) => x.title === "Fictional action t-none")).toMatchObject({ route: "checkoff", route_reason: "No owner named", listed: true });
+    expect(checks.items.find((x: any) => x.title === "Fictional action t-unknown")).toMatchObject({ route: "checkoff", owner: "Someone Else", route_reason: "Not on the Marketing team" });
     expect(JSON.stringify(checks)).not.toContain("slack.com");
     expect((await rep("corporate-checkoffs", { headers: { authorization: "Bearer wrong" } })).status).toBe(401);
   });
@@ -186,7 +187,7 @@ describe("routing and resolution", () => {
 
   it("bulk Mark done reports each item; failed ones can be retried without a second completion", async () => {
     await imp(pass("seo", [taskF("t-b1", "Example Ops Lead"), taskF("t-b2", "Example Partner Rep")]));
-    const [b1, b2, marketing] = [await task("t-b1"), await task("t-b2"), await task("t-two")];
+    const [b1, b2, marketing] = [await task("t-b1"), await task("t-b2"), await task("t-marketing")];
     const r = await call("POST", "/task-requests/mark-done", { ...S, ids: [b1.id, marketing.id] });
     expect(r.body.results.map((x: any) => x.outcome)).toEqual(["resolved", "failed"]);
     const retry = await call("POST", "/task-requests/mark-done", { ...S, ids: [b1.id, b2.id] });
@@ -202,7 +203,7 @@ describe("routing and resolution", () => {
     await call("POST", "/owners", { ...S, name: "Someone Else", team: "marketing" });
     const preview = await call("POST", "/task-requests/reroute", { ...S, dry_run: true });
     expect(preview.body.changes.map((c: any) => c.title)).toEqual(["Fictional action t-unknown"]);
-    expect((await task("t-unknown")).route).toBe("review");
+    expect((await task("t-unknown")).route).toBe("checkoff");
     await call("POST", "/task-requests/reroute", { ...S, dry_run: false });
     expect((await task("t-unknown")).route).toBe("marketing");
     expect((await task("t-two")).route).toBe("checkoff");
@@ -323,5 +324,22 @@ describe("releasing a claim whose answer was lost", () => {
     expect(await task("rel-b")).toMatchObject({ delivery_status: "resolved", resolution_state: "resolved", resolved_in: "corporate_gifts", tracker_task_id: null });
     // Released A can be claimed again at its version.
     expect(await act(a.id, "claim", { content_version: a.content_version })).toMatchObject({ outcome: "claimed" });
+  });
+});
+
+describe("follow up: assign check-off items to Marketing", () => {
+  it("assigns one or many; each becomes one Marketing request for the dashboard; repeats and closed items are reported", async () => {
+    await imp(pass("seo", ["fu-a", "fu-b", "fu-c"].map((k) => ({ ...sel, key: k, type: "task", task_id: k, partners: [{ names: ["Demo Market Delta"] }], title: `Fictional follow-up ${k}`, owner: "Example Outside Person", sources: [src("seo", ts())] }))));
+    const [a, b, c] = [await task("fu-a"), await task("fu-b"), await task("fu-c")];
+    expect([a.route, b.route, c.route]).toEqual(["checkoff", "checkoff", "checkoff"]);
+    await call("POST", `/task-requests/${c.id}/resolve`, { ...S });
+    const r = await call("POST", "/task-requests/assign-marketing", { ...S, ids: [a.id, b.id, c.id] });
+    expect(r.body.results.map((x: any) => x.outcome)).toEqual(["assigned", "assigned", "failed"]);
+    expect((await call("POST", "/task-requests/assign-marketing", { ...S, ids: [a.id] })).body.results[0].outcome).toBe("already");
+    expect(await task("fu-a")).toMatchObject({ route: "marketing", route_decided_by: "Test Person", owner_hint: "Example Outside Person" });
+    const offered = (await rep("corporate-tasks?v=2")).body.tasks.filter((t: any) => [a.id, b.id].includes(t.id));
+    expect(offered).toHaveLength(2);
+    const checks = (await rep("corporate-checkoffs")).body.items.filter((x: any) => [a.id, b.id].includes(x.id));
+    expect(checks.every((x: any) => x.listed === false)).toBe(true);
   });
 });

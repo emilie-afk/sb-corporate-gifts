@@ -238,7 +238,8 @@ function ShareForm({ r, onClose, onSaved }: { r: any; onClose: () => void; onSav
   );
 }
 
-function TaskList({ tasks, onRetry, onDismiss, onChanged, select }: {
+function TaskList({ tasks, onRetry, onDismiss, onChanged, select, onFollowUp, followName = "Marketing" }: {
+  onFollowUp?: (t: any) => void; followName?: string;
   tasks: any[]; onRetry?: (t: any) => void; onDismiss?: (t: any) => void; onChanged?: () => void;
   select?: { ids: string[]; toggle: (id: string) => void };
 }) {
@@ -268,6 +269,7 @@ function TaskList({ tasks, onRetry, onDismiss, onChanged, select }: {
               {onChanged && open && t.route === "review" && <>
                 <button className="btn small" onClick={() => setAct({ t, kind: "marketing" })}>Assign as Marketing task</button>
                 <button className="btn small" onClick={() => setAct({ t, kind: "checkoff" })}>Track as check-off</button></>}
+              {onFollowUp && open && t.route === "checkoff" && <button className="btn small" onClick={() => onFollowUp(t)} title="Becomes a Marketing task to follow up">Follow up: assign to {followName}</button>}
               {onChanged && open && t.resolution_state !== "requested" && <button className="btn small primary" onClick={() => setAct({ t, kind: "resolve" })}>Resolve</button>}
               {onRetry && t.delivery_status === "failed" && !t.resolution_state && <button className="btn small" onClick={() => onRetry(t)}>Retry delivery</button>}
               {onDismiss && ["pending", "in_review", "failed"].includes(t.delivery_status) && !t.resolution_state && <button className="btn ghost small" onClick={() => onDismiss(t)}>Dismiss</button>}
@@ -516,10 +518,14 @@ function FollowUps() {
     ["resolved", "Resolved", all.filter((x) => x.resolution_state === "resolved")],
   ];
   const reload = () => { setSel([]); t.reload(); };
+  const [follow, setFollow] = useState<string[] | null>(null);
+  const owners = useLoad(() => get("/owners"), []);
+  const mk = (owners.data?.owners ?? []).filter((o: any) => o.active && o.team === "marketing").map((o: any) => o.name.split(" ")[0]);
+  const followName = mk.length ? mk.join(" / ") : "Marketing";
   const toggle = (id: string) => setSel(sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]);
   return (
     <>
-      <p className="hint">Marketing tasks go to the Marketing Dashboard for review and assignment, then appear in Marketing Tasks (Task Tracker). Work owned outside Marketing (including partners) is a check-off item, shown here and in the dashboard. Items without a clear owner wait for a routing decision. Resolve works the same in both apps.</p>
+      <p className="hint">Tasks owned by the Marketing team go to the Marketing Dashboard and then to Marketing Tasks (Task Tracker). Everything else is a check-off item with the names from Slack, shown here and in the dashboard: tick items off, or use Follow up to assign them to {followName}. Resolve works the same in both apps.</p>
       <div className="filters">
         <Select value={status} onChange={setStatus} options={{ review: `To review${t.data ? ` (${t.data.to_review})` : ""}`, active: "Not dismissed or resolved", all: "All" }} aria-label="Tasks shown" />
         <button className="btn small" onClick={() => setAddTask(true)}>Add task</button>
@@ -530,12 +536,14 @@ function FollowUps() {
       {t.data && groups.map(([key, title, items]) => items.length > 0 && (
         <Section key={key} title={title} count={items.length} defaultOpen={key !== "resolved"}
           actions={key === "checkoff" ? <><button className="btn small" onClick={() => setSel(sel.length === items.length ? [] : items.map((x) => x.id))}>{sel.length === items.length ? "Clear" : "Select all"}</button>
-            <button className="btn small primary" disabled={!sel.length} onClick={() => setBulk(true)}>Mark done ({sel.length})</button></> : undefined}>
-          <TaskList tasks={items} onChanged={reload} select={key === "checkoff" ? { ids: sel, toggle } : undefined}
+            <button className="btn small primary" disabled={!sel.length} onClick={() => setBulk(true)}>Mark done ({sel.length})</button>
+            <button className="btn small" disabled={!sel.length} onClick={() => setFollow(sel)}>Follow up: assign to {followName} ({sel.length})</button></> : undefined}>
+          <TaskList tasks={items} onChanged={reload} select={key === "checkoff" ? { ids: sel, toggle } : undefined} onFollowUp={key === "checkoff" ? (x) => setFollow([x.id]) : undefined} followName={followName}
             onRetry={(x) => setAct({ t: x, kind: "retry" })} onDismiss={(x) => setAct({ t: x, kind: "dismiss" })} />
         </Section>
       ))}
       {bulk && <MarkDoneForm ids={sel} onClose={() => setBulk(false)} onSaved={(failed) => { setBulk(false); t.reload(); setSel(failed); }} />}
+      {follow && <FollowUpForm ids={follow} name={followName} onClose={() => setFollow(null)} onSaved={(failed) => { setFollow(null); t.reload(); setSel(failed); }} />}
       <Routing onDone={reload} />
       <h3>Other follow-ups (entered by hand)</h3>
       <div className="filters"><button className="btn small" onClick={() => setEdit({})}>Add action, blocker or decision</button></div>
@@ -558,6 +566,32 @@ function FollowUps() {
       {addTask && <TaskForm onClose={() => setAddTask(false)} onSaved={() => { setAddTask(false); t.reload(); }} />}
       {act && <TaskActionForm t={act.t} kind={act.kind} onClose={() => setAct(null)} onSaved={() => { setAct(null); t.reload(); }} />}
     </>
+  );
+}
+
+/** Follow up: assign check-off items to Marketing (one or many). Items that fail stay selected for a retry. */
+function FollowUpForm({ ids, name, onClose, onSaved }: { ids: string[]; name: string; onClose: () => void; onSaved: (failed: string[]) => void }) {
+  const [signer, setSigner] = useSigner();
+  const [res, setRes] = useState<any>(null);
+  const s = useSave();
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    let out: any;
+    const ok = await s.run(async () => { out = await post("/task-requests/assign-marketing", { ids, signer_name: signer }); });
+    if (ok) { rememberSigner(signer); setRes(out); }
+  };
+  const failed = (res?.results ?? []).filter((r: any) => r.outcome === "failed");
+  return (
+    <Overlay kind="modal" title={`Follow up: assign ${ids.length} item(s) to ${name}`} onClose={() => res ? onSaved(failed.map((f: any) => f.id)) : onClose()}>
+      <form onSubmit={submit} className="form-grid">
+        <ErrorBox error={s.error} />
+        {!res && <p className="hint wide">Each item becomes a Marketing task in the Marketing Dashboard, assigned to {name} by default, and is then sent to Marketing Tasks (Task Tracker). It leaves the check-off list.</p>}
+        {!res && <SignerField value={signer} onChange={setSigner} error={s.fe("signer_name")} />}
+        {res && <p className="wide">{res.results.length - failed.length} assigned{failed.length ? `; ${failed.length} failed and stay selected: ${failed.map((f: any) => f.message).join("; ")}` : ""}.</p>}
+        {!res ? <FormActions saving={s.saving} onCancel={onClose} label={`Assign to ${name}`} />
+          : <p className="wide"><button type="button" className="btn small" onClick={() => onSaved(failed.map((f: any) => f.id))}>Close</button></p>}
+      </form>
+    </Overlay>
   );
 }
 
@@ -603,7 +637,7 @@ function Routing({ onDone }: { onDone: () => void }) {
   const TEAM: Record<string, string> = { marketing: "Marketing team", outside: "Outside Marketing", external: "External partner" };
   return (
     <Section title="Owners and routing" defaultOpen={false}>
-      <p className="hint">Tasks are routed by their owner: a Marketing team member → Marketing task; someone outside Marketing or a partner → check-off item; no owner, several owners or an unknown name → Needs routing. Routes chosen by a person and tasks already in Task Tracker are never changed.</p>
+      <p className="hint">Tasks are routed by their owner: a Marketing team member in this list → Marketing task; everyone else (people outside Marketing, partners, names not in this list, several owners or none) → check-off item with the names from Slack. Routes chosen by a person and tasks already in Task Tracker are never changed.</p>
       <div className="filters"><button className="btn small" onClick={() => setEdit({})}>Add owner</button></div>
       {o.data && (o.data.owners.length ? <div className="table-wrap"><table className="dense">
         <thead><tr><th>Name</th><th>Other names</th><th>Team</th><th>Active</th><th /></tr></thead>
