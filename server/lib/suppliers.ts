@@ -13,8 +13,39 @@ export const RESOURCE_TYPES: Record<string, Section> = {
   shipping_method: "gift_terms", order_cutoff: "gift_terms", other_term: "gift_terms",
   product_photos: "assets_documents", logo: "assets_documents", packaging_guide: "assets_documents", proof: "assets_documents",
   order_form: "assets_documents", other_document: "assets_documents",
+  one_sheet: "assets_documents", onboarding_form: "assets_documents", listings_spreadsheet: "assets_documents",
+  listing_instructions: "assets_documents", sales_assets: "assets_documents", shared_folder: "assets_documents",
   decision: "decisions_followups", follow_up: "decisions_followups",
 };
+/** Resource types that are documents or sites with a link (the ones a Slack link can fill). */
+export const LINK_TYPES = ["catalog", "price_sheet", "availability_list", "quote", "one_sheet", "onboarding_form", "order_form", "listings_spreadsheet",
+  "listing_instructions", "sales_assets", "shared_folder", "product_photos", "logo", "packaging_guide", "proof", "other_document"] as const;
+
+/**
+ * Comparison key of a resource URL, so the same document is recognised however the link was copied: Google Docs,
+ * Sheets, Slides and Drive files/folders by their id; Slack files by their file id; anything else by host and path
+ * (lower-case host, no fragment, no tracking or sharing parameters, no trailing slash).
+ */
+export function linkKey(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let u: URL;
+  try { u = new URL(raw.trim()); } catch { return null; }
+  if (!["http:", "https:"].includes(u.protocol)) return null;
+  const host = u.hostname.toLowerCase().replace(/^www\./, "");
+  const path = u.pathname;
+  let m: RegExpExecArray | null;
+  if (host === "docs.google.com" && (m = /^\/(document|spreadsheets|presentation|forms)\/(?:u\/\d+\/)?d\/(?:e\/)?([A-Za-z0-9_-]{10,})/.exec(path))) return `google:${m[2]}`;
+  if (host === "drive.google.com") {
+    if ((m = /\/folders\/([A-Za-z0-9_-]{10,})/.exec(path))) return `google:${m[1]}`;
+    if ((m = /\/file\/(?:u\/\d+\/)?d\/([A-Za-z0-9_-]{10,})/.exec(path))) return `google:${m[1]}`;
+    const id = u.searchParams.get("id");
+    if (id && /^[A-Za-z0-9_-]{10,}$/.test(id)) return `google:${id}`;
+  }
+  if (/(^|\.)slack\.com$/.test(host) && (m = /^\/files\/[A-Z0-9]+\/(F[A-Z0-9]{6,})/.exec(path))) return `slack-file:${m[1]}`;
+  const params = [...u.searchParams.entries()].filter(([k]) => !/^(utm_|usp$|fbclid$|gclid$|ref$|ouid$|rtpof$|sd$)/i.test(k)).sort(([a], [b]) => a.localeCompare(b));
+  const q = params.length ? `?${params.map(([k, v]) => `${k}=${v}`).join("&")}` : "";
+  return `${host}${path.replace(/\/+$/, "") || ""}${q}`.toLowerCase().slice(0, 500);
+}
 export const RESOURCE_TYPE_KEYS = Object.keys(RESOURCE_TYPES) as [string, ...string[]];
 
 export const SAMPLE_STATUSES = ["requested", "approved", "shipped", "delivered", "cancelled"] as const;

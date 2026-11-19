@@ -17,7 +17,7 @@ export const SECTION_LABEL: Record<string, string> = {
 const SECTION_HELP: Record<string, string> = {
   catalogs_pricing: "Catalogs, availability lists, quotes and price sheets, with effective dates.",
   gift_terms: "Sample options, minimum quantities, customization, lead times, shipping methods and order cutoffs.",
-  assets_documents: "Product photos, logos, packaging guides, proofs and order forms.",
+  assets_documents: "One-sheets, onboarding forms, listings spreadsheets and instructions, sales assets, shared folders, photos, logos and other documents.",
   decisions_followups: "Confirmed decisions about this marketplace, linked to open actions or requirements.",
 };
 export const TYPE_LABEL: Record<string, [string, string]> = {
@@ -26,6 +26,8 @@ export const TYPE_LABEL: Record<string, [string, string]> = {
   lead_time: ["Lead time", "gift_terms"], shipping_method: ["Shipping method", "gift_terms"], order_cutoff: ["Order cutoff", "gift_terms"], other_term: ["Other term", "gift_terms"],
   product_photos: ["Product photos", "assets_documents"], logo: ["Logo", "assets_documents"], packaging_guide: ["Packaging guide", "assets_documents"],
   proof: ["Proof", "assets_documents"], order_form: ["Order form", "assets_documents"], other_document: ["Other document", "assets_documents"],
+  one_sheet: ["One-sheet", "assets_documents"], onboarding_form: ["Onboarding form", "assets_documents"], listings_spreadsheet: ["Listings spreadsheet", "assets_documents"],
+  listing_instructions: ["Listing instructions", "assets_documents"], sales_assets: ["Sales assets", "assets_documents"], shared_folder: ["Shared folder", "assets_documents"],
   decision: ["Decision", "decisions_followups"], follow_up: ["Follow-up", "decisions_followups"],
 };
 const SAMPLE_LABEL: Record<string, string> = { requested: "Requested", approved: "Approved", shipped: "Shipped", delivered: "Delivered", cancelled: "Cancelled" };
@@ -37,15 +39,22 @@ export const APPLICATION_LABEL: Record<string, string> = {
   approved: "Approved", rejected: "Rejected", withdrawn: "Withdrawn",
 };
 const FIELD_LABEL: Record<string, string> = { relationship_status: "Relationship status", application_status: "Application status", application_date: "Application date" };
+const ROUTE_LABEL: Record<string, [string, string]> = {
+  marketing: ["Marketing task", "info"], checkoff: ["Check-off item", "neutral"], review: ["Needs routing", "warn"],
+};
+const RES_ACTION: Record<string, [string, string]> = {
+  add: ["Adds a resource", "ok"], fill_link: ["Fills in an existing link", "ok"], exists: ["Already exists", "neutral"],
+  needs_link: ["Still needs a link", "warn"], update: ["Updates the resource", "info"],
+};
 const DELIVERY_LABEL: Record<string, [string, string]> = {
-  pending: ["Waiting for the dashboard", "warn"], in_review: ["In review (Marketing Dashboard)", "info"], delivered: ["In Task Tracker", "ok"],
-  failed: ["Delivery failed", "danger"], dismissed: ["Dismissed", "neutral"], resolved: ["Resolved", "neutral"],
+  pending: ["Waiting for the dashboard", "warn"], in_review: ["In review (Marketing Dashboard)", "info"], sending: ["Being sent to Task Tracker", "info"], delivered: ["In Task Tracker", "ok"],
+  failed: ["Delivery failed", "danger"], dismissed: ["Dismissed", "neutral"], resolved: ["Resolved", "ok"],
 };
 const fmtValue = (field: string, v: string | null) => v == null ? "not set" : field === "relationship_status" ? (STATUS_LABEL[v] ?? v) : field === "application_status" ? (APPLICATION_LABEL[v] ?? v) : v;
 
 // View keys are kept from Supplier Resources so existing links (?tab=resources&view=suppliers…) still work.
-type View = "suppliers" | "review" | "followups" | "samples" | "scans";
-const VIEWS: [View, string][] = [["suppliers", "By marketplace"], ["review", "Review queue"], ["followups", "Tasks"], ["samples", "Sample boxes"], ["scans", "Slack scans"]];
+type View = "suppliers" | "library" | "review" | "followups" | "samples" | "scans";
+const VIEWS: [View, string][] = [["suppliers", "By marketplace"], ["library", "General materials"], ["review", "Review queue"], ["followups", "Corporate Gifts tasks"], ["samples", "Sample boxes"], ["scans", "Slack scans"]];
 
 const ExtLink = ({ href, children }: { href: string | null; children: React.ReactNode }) =>
   href ? <a href={href} target="_blank" rel="noreferrer noopener">{children}</a> : null;
@@ -65,6 +74,7 @@ export function SupplierResourcesScreen({ params, nav }: { params: Record<string
         </div>
       </div>
       {view === "suppliers" && <BySupplier selected={params.supplier ?? ""} onSelect={(s) => go("suppliers", s ? { supplier: s } : {})} nav={nav} />}
+      {view === "library" && <Library />}
       {view === "review" && <ReviewQueue />}
       {view === "followups" && <FollowUps />}
       {view === "samples" && <Samples />}
@@ -106,6 +116,7 @@ function BySupplier({ selected, onSelect, nav }: { selected: string; onSelect: (
 function SupplierDetail({ supplier, nav, onChanged }: { supplier: string; nav: Nav; onChanged: () => void }) {
   const d = useLoad(() => get(`/supplier-resources?supplier=${encodeURIComponent(supplier)}`), [supplier]);
   const [edit, setEdit] = useState<{ r: any; section?: string; replacing?: any } | null>(null);
+  const [share, setShare] = useState<any | null>(null);
   const reload = () => { d.reload(); onChanged(); };
   if (d.loading && !d.data) return <Loading />;
   if (d.error) return <ErrorBox error={d.error} />;
@@ -132,7 +143,7 @@ function SupplierDetail({ supplier, nav, onChanged }: { supplier: string; nav: N
             actions={<button className="btn small" onClick={() => setEdit({ r: {}, section: sec })}>Add</button>}>
             <p className="hint">{SECTION_HELP[sec]}</p>
             {current.length === 0 && <Empty>Nothing recorded yet.</Empty>}
-            <ResourceList items={current} onEdit={(r) => setEdit({ r })} onReplace={(r) => setEdit({ r: { resource_type: r.resource_type, title: r.title, series_key: r.series_key }, replacing: r })} />
+            <ResourceList items={current} onEdit={(r) => setEdit({ r })} onShare={setShare} onReplace={(r) => setEdit({ r: { resource_type: r.resource_type, title: r.title, series_key: r.series_key }, replacing: r })} />
             {old.length > 0 && (
               <details className="history">
                 <summary>Superseded ({old.length})</summary>
@@ -143,9 +154,9 @@ function SupplierDetail({ supplier, nav, onChanged }: { supplier: string; nav: N
         );
       })}
       <Section title="Corporate Gifts tasks" count={openTasks.length} defaultOpen={d.data.tasks.length > 0}>
-        <p className="hint">Tasks are reviewed and assigned in the Marketing Dashboard, then appear in Marketing Tasks (Task Tracker).</p>
+        <p className="hint">Marketing tasks are reviewed and assigned in the Marketing Dashboard, then appear in Marketing Tasks (Task Tracker). Work owned outside Marketing is a check-off item. Resolve works the same here and in the dashboard.</p>
         {d.data.tasks.length === 0 && <Empty>No tasks for this marketplace.</Empty>}
-        <TaskList tasks={d.data.tasks} />
+        <TaskList tasks={d.data.tasks} onChanged={reload} />
       </Section>
       {(d.data.actions.length > 0 || d.data.samples.length > 0) && (
         <Section title="Other follow-ups and samples" count={d.data.actions.filter((a: any) => a.status === "open").length} defaultOpen={false}>
@@ -157,48 +168,164 @@ function SupplierDetail({ supplier, nav, onChanged }: { supplier: string; nav: N
       )}
       {edit && <ResourceForm supplier={supplier} data={d.data} r={edit.r} section={edit.section} replacing={edit.replacing}
         onClose={() => setEdit(null)} onSaved={() => { setEdit(null); reload(); }} />}
+      {share && <ShareForm r={share} onClose={() => setShare(null)} onSaved={() => { setShare(null); reload(); }} />}
     </div>
   );
 }
 
-function TaskList({ tasks, onRetry, onDismiss, onResolve }: { tasks: any[]; onRetry?: (t: any) => void; onDismiss?: (t: any) => void; onResolve?: (t: any) => void }) {
+// ------------------------------------------------------------ general materials
+// Corporate sales materials not tied to one marketplace (catalog, sales assets, one-sheets…). Attach them to eligible
+// marketplaces with "Use for marketplaces". Internal references (e.g. the outreach target list) stay here only.
+function Library() {
+  const d = useLoad(() => get("/library-resources"), []);
+  const [edit, setEdit] = useState<any | null>(null);
+  const [share, setShare] = useState<any | null>(null);
+  const empty = { requirements: [], actions: [] };
+  const current = (d.data?.resources ?? []).filter((r: any) => r.status === "current");
   return (
+    <>
+      <p className="hint">General corporate materials and internal references. Use “Use for marketplaces” to attach a linked material to eligible marketplaces; the document's own sharing settings are not changed.</p>
+      <div className="filters"><button className="btn small" onClick={() => setEdit({})}>Add material</button></div>
+      {d.loading && !d.data && <Loading />}
+      <ErrorBox error={d.error} />
+      {d.data && current.length === 0 && <Empty>No general materials yet.</Empty>}
+      <ResourceList items={current} onEdit={setEdit} onShare={setShare} />
+      {edit && <ResourceForm supplier="library" data={empty} r={edit} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); d.reload(); }} />}
+      {share && <ShareForm r={share} onClose={() => setShare(null)} onSaved={() => { setShare(null); d.reload(); }} />}
+    </>
+  );
+}
+
+/** "Use for other marketplaces": attaches the same link, title, category and source reference to chosen partners. */
+function ShareForm({ r, onClose, onSaved }: { r: any; onClose: () => void; onSaved: () => void }) {
+  const list = useLoad(() => get("/suppliers"), []);
+  const [ids, setIds] = useState<string[]>([]);
+  const [confirm, setConfirm] = useState(false);
+  const [preview, setPreview] = useState<any>(null);
+  const [done, setDone] = useState<any>(null);
+  const [signer, setSigner] = useSigner();
+  const s = useSave();
+  const eligible = (list.data?.partners ?? []).filter((p: any) => p.sales_role === "confirmed" && p.id !== r.marketplace_id);
+  const toggle = (id: string) => { setPreview(null); setIds(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]); };
+  const run = async (dry: boolean) => {
+    let out: any;
+    const ok = await s.run(async () => { out = await post(`/supplier-resources/${r.id}/share`, { marketplace_ids: ids, confirm_partner_specific: confirm, dry_run: dry, signer_name: signer }); });
+    if (!ok) return;
+    rememberSigner(signer);
+    if (dry) setPreview(out); else setDone(out);
+  };
+  const names = (xs: any[]) => xs.map((x) => x.reason ? `${x.name} (${x.reason.toLowerCase()})` : x.name).join(", ");
+  return (
+    <Overlay kind="modal" title="Use for other marketplaces" onClose={done ? onSaved : onClose}>
+      <div className="form-grid">
+        <p className="hint wide"><strong>{r.title}</strong> · {TYPE_LABEL[r.resource_type]?.[0]}. The same link, title, category and source reference are added to each marketplace you choose. Marketplaces that already have this link are skipped.</p>
+        <ErrorBox error={s.error} />
+        {!done && <Field label="Marketplaces" required wide>
+          <div className="row-gap wrap">{eligible.map((p: any) => (
+            <label key={p.id} className="check"><input type="checkbox" checked={ids.includes(p.id)} onChange={() => toggle(p.id)} /> {p.name}</label>))}</div>
+        </Field>}
+        {r.partner_specific && !done && <label className="check wide"><input type="checkbox" checked={confirm} onChange={(e) => setConfirm(e.target.checked)} /> This resource is marked partner-specific. Use it for the chosen marketplaces anyway.</label>}
+        {!done && <SignerField value={signer} onChange={setSigner} error={s.fe("signer_name")} />}
+        {preview && !done && <p className="wide">Preview: adds to {preview.added.length ? names(preview.added) : "none"}{preview.skipped.length ? ` · skips ${names(preview.skipped)}` : ""}.</p>}
+        {done && <p className="wide"><strong>Added to:</strong> {done.added.length ? names(done.added) : "none"}{done.skipped.length ? <> · <strong>Skipped:</strong> {names(done.skipped)}</> : ""}.</p>}
+        <p className="wide">
+          {!done && <><button type="button" className="btn small" disabled={s.saving || !ids.length} onClick={() => run(true)}>Preview</button>{" "}
+            <button type="button" className="btn small primary" disabled={s.saving || !preview || (r.partner_specific && !confirm)} onClick={() => run(false)}>Add to marketplaces</button>{" "}</>}
+          <button type="button" className="btn small ghost" onClick={done ? onSaved : onClose}>{done ? "Close" : "Cancel"}</button>
+        </p>
+      </div>
+    </Overlay>
+  );
+}
+
+function TaskList({ tasks, onRetry, onDismiss, onChanged, select }: {
+  tasks: any[]; onRetry?: (t: any) => void; onDismiss?: (t: any) => void; onChanged?: () => void;
+  select?: { ids: string[]; toggle: (id: string) => void };
+}) {
+  const [act, setAct] = useState<{ t: any; kind: "resolve" | "marketing" | "checkoff" } | null>(null);
+  return (
+    <>
     <ul className="timeline">
       {tasks.map((t) => {
         const [label, tone] = DELIVERY_LABEL[t.delivery_status] ?? [t.delivery_status, "neutral"];
+        const [rLabel, rTone] = ROUTE_LABEL[t.route] ?? [t.route, "neutral"];
+        const open = t.resolution_state !== "resolved" && t.delivery_status !== "dismissed" && t.slack_status !== "cancelled";
         return (
           <li key={t.id}>
             <div className="row-gap">
+              {select && t.route === "checkoff" && open && <input type="checkbox" aria-label={`Select ${t.title}`} checked={select.ids.includes(t.id)} onChange={() => select.toggle(t.id)} />}
               <strong>{t.title}</strong>
-              <Pill tone={tone as any}>{label}</Pill>
-              {t.tracker_status === "done" && <Pill tone="ok">Done in Task Tracker</Pill>}
-              {t.slack_status !== "open" && <Pill>{t.slack_status === "done" ? "Done (Slack)" : "Cancelled (Slack)"}</Pill>}
-              {t.overdue && <Pill tone="danger">Overdue</Pill>}
+              <Pill tone={rTone as any}>{rLabel}</Pill>
+              {t.route === "marketing" && !t.resolution_state && <Pill tone={tone as any}>{label}</Pill>}
+              {t.resolution_state === "resolved" && <Pill tone="ok">Resolved {t.completed_on}</Pill>}
+              {t.resolution_state === "requested" && <Pill tone="info">Resolving in Task Tracker…</Pill>}
+              {t.resolve_error && <Pill tone="danger">Resolve failed: {t.resolve_error}</Pill>}
+              {t.tracker_status === "done" && t.resolution_state !== "resolved" && <Pill tone="ok">Done in Task Tracker</Pill>}
+              {t.slack_status === "cancelled" && <Pill>Cancelled (Slack)</Pill>}
+              {t.overdue && open && <Pill tone="danger">Overdue</Pill>}
               <span className="spacer" />
               {t.tracker_open_url && <ExtLink href={t.tracker_open_url}>Open in Task Tracker</ExtLink>}
-              {onRetry && t.delivery_status === "failed" && <button className="btn small" onClick={() => onRetry(t)}>Retry delivery</button>}
-              {onResolve && ["pending", "in_review", "failed"].includes(t.delivery_status) && <button className="btn small" onClick={() => onResolve(t)} title="Handled without creating a task">Resolve</button>}
-              {onDismiss && ["pending", "in_review", "failed"].includes(t.delivery_status) && <button className="btn ghost small" onClick={() => onDismiss(t)}>Dismiss</button>}
+              {onChanged && open && t.route === "review" && <>
+                <button className="btn small" onClick={() => setAct({ t, kind: "marketing" })}>Assign as Marketing task</button>
+                <button className="btn small" onClick={() => setAct({ t, kind: "checkoff" })}>Track as check-off</button></>}
+              {onChanged && open && t.resolution_state !== "requested" && <button className="btn small primary" onClick={() => setAct({ t, kind: "resolve" })}>Resolve</button>}
+              {onRetry && t.delivery_status === "failed" && !t.resolution_state && <button className="btn small" onClick={() => onRetry(t)}>Retry delivery</button>}
+              {onDismiss && ["pending", "in_review", "failed"].includes(t.delivery_status) && !t.resolution_state && <button className="btn ghost small" onClick={() => onDismiss(t)}>Dismiss</button>}
             </div>
             {t.brief && <div className="pre">{t.brief}</div>}
             <div className="hint">
               {(t.marketplace_names ?? []).join(", ")}
-              {(t.tracker_assignee || t.owner_hint) && <> · Owner: {t.tracker_assignee ?? `${t.owner_hint} (from Slack)`}</>}
+              {(t.tracker_assignee || t.owner_name || t.owner_hint) && <> · Owner: {t.tracker_assignee ?? t.owner_name ?? `${t.owner_hint} (from Slack)`}</>}
               {(t.tracker_due_date || t.due_date) && <> · Due {t.tracker_due_date ?? t.due_date}</>}
-              {t.delivery_error && <> · {t.delivery_error}</>}
-              {t.delivery_status === "resolved" && <> · Resolved {t.resolved_in === "dashboard" ? "in the Marketing Dashboard" : `by ${t.resolved_by}`}</>}
-              {t.delivery_status === "delivered" && t.resolved_at && <> · Resolved {t.resolved_in === "dashboard" ? "in the Marketing Dashboard" : "here"}, but the task already existed in Task Tracker: complete it there</>}
+              {t.route === "review" && t.route_reason && <> · {t.route_reason}</>}
+              {t.delivery_error && !t.resolution_state && <> · {t.delivery_error}</>}
+              {t.resolution_state === "resolved" && <> · Resolved {t.resolved_in === "dashboard" ? "in the Marketing Dashboard" : t.resolved_in === "task_tracker" ? "in Task Tracker" : ""}{t.resolved_by ? ` by ${t.resolved_by}` : ""}{t.completion_source === "slack" ? " (Slack confirmation)" : ""}</>}
+              {t.resolution_state !== "resolved" && t.delivery_status === "delivered" && t.resolved_at && !t.resolve_requested_at && <> · Marked resolved on {String(t.resolved_at).slice(0, 10)} while the task already existed in Task Tracker; use Resolve to complete it there</>}
               {(t.source_refs ?? []).map((x: any, n: number) => <span key={n}> · <ExtLink href={x.permalink}>{CHANNEL_LABEL[x.channel] ?? x.channel} {x.date ?? ""}</ExtLink></span>)}
+              {(t.evidence ?? []).filter((e: any) => e.permalink).map((e: any, n: number) => <span key={`e${n}`}> · <ExtLink href={e.permalink}>Completion evidence {e.date}</ExtLink></span>)}
               {" · "}{t.origin === "slack" ? "From Slack" : `Added by ${t.created_by}`}
             </div>
           </li>
         );
       })}
     </ul>
+    {act && onChanged && <TaskDecisionForm t={act.t} kind={act.kind} onClose={() => setAct(null)} onSaved={() => { setAct(null); onChanged(); }} />}
+    </>
   );
 }
 
-function ResourceList({ items, onEdit, onReplace }: { items: any[]; onEdit: (r: any) => void; onReplace?: (r: any) => void }) {
+function TaskDecisionForm({ t, kind, onClose, onSaved }: { t: any; kind: "resolve" | "marketing" | "checkoff"; onClose: () => void; onSaved: () => void }) {
+  const [signer, setSigner] = useSigner();
+  const [on, setOn] = useState("");
+  const [note, setNote] = useState("");
+  const s = useSave();
+  const inTracker = t.route === "marketing" && ["delivered", "sending"].includes(t.delivery_status);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const ok = await s.run(() => kind === "resolve"
+      ? post(`/task-requests/${t.id}/resolve`, { completed_on: on || null, note, version: t.version, signer_name: signer })
+      : post(`/task-requests/${t.id}/route`, { route: kind, version: t.version, signer_name: signer }));
+    if (ok) { rememberSigner(signer); onSaved(); }
+  };
+  const title = kind === "resolve" ? "Resolve" : kind === "marketing" ? "Assign as Marketing task" : "Track as check-off";
+  return (
+    <Overlay kind="modal" title={title} onClose={onClose}>
+      <form onSubmit={submit} className="form-grid">
+        <ErrorBox error={s.error} />
+        <p className="hint wide">{kind === "resolve"
+          ? inTracker ? `"${t.title}" is completed in Task Tracker by the Marketing Dashboard (its own completion rules). It shows Resolved here once Task Tracker confirms.`
+            : t.route === "marketing" ? `"${t.title}" was handled without a task. It is closed as resolved here and in the Marketing Dashboard and can no longer be sent to Task Tracker.` : `"${t.title}" is marked done in both apps.`
+          : kind === "marketing" ? `"${t.title}" goes to the Marketing Dashboard for assignment, then to Marketing Tasks.` : `"${t.title}" is tracked as a check-off item in both apps; no Task Tracker task is created.`}</p>
+        {kind === "resolve" && <Field label="Completion date" hint="Leave empty for today. Used for the weekly report."><input type="date" value={on} max={today()} onChange={(e) => setOn(e.target.value)} /></Field>}
+        {kind === "resolve" && <Field label="Note (optional)" wide><input value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} /></Field>}
+        <SignerField value={signer} onChange={setSigner} error={s.fe("signer_name")} />
+        <FormActions saving={s.saving} onCancel={onClose} label={title} />
+      </form>
+    </Overlay>
+  );
+}
+
+function ResourceList({ items, onEdit, onReplace, onShare }: { items: any[]; onEdit: (r: any) => void; onReplace?: (r: any) => void; onShare?: (r: any) => void }) {
   return (
     <ul className="timeline">
       {items.map((r) => (
@@ -206,9 +333,16 @@ function ResourceList({ items, onEdit, onReplace }: { items: any[]; onEdit: (r: 
           <div className="row-gap">
             <Pill>{TYPE_LABEL[r.resource_type]?.[0] ?? r.resource_type}</Pill>
             <strong>{r.link_url ? <ExtLink href={r.link_url}>{r.title}</ExtLink> : r.title}</strong>
+            {r.link_url && <span className="hint">{r.link_kind === "slack_file" ? "Slack file" : "Link"}</span>}
+            {r.link_needed && <Pill tone="warn">Link needed</Pill>}
             {r.status === "superseded" && <Pill tone="warn">Superseded</Pill>}
+            {r.partner_specific && <Pill>Partner-specific</Pill>}
+            {r.internal && <Pill>Internal reference</Pill>}
+            {r.shared_from_id && <Pill tone="info">Shared</Pill>}
             {r.origin === "slack" && <Pill tone="info">From Slack</Pill>}
             <span className="spacer" />
+            {r.link_needed && <button className="btn small" onClick={() => onEdit(r)}>Add link</button>}
+            {onShare && r.link_url && !r.internal && r.status === "current" && <button className="btn ghost small" onClick={() => onShare(r)}>{r.scope === "library" ? "Use for marketplaces" : "Use for other marketplaces"}</button>}
             {onReplace && <button className="btn ghost small" onClick={() => onReplace(r)}>Replace</button>}
             <button className="btn ghost small" onClick={() => onEdit(r)}>Edit</button>
           </div>
@@ -217,6 +351,7 @@ function ResourceList({ items, onEdit, onReplace }: { items: any[]; onEdit: (r: 
             {r.effective_date && <>Effective {r.effective_date} · </>}
             Last confirmed {r.last_confirmed_on ?? "—"}
             {r.source_url && <> · <ExtLink href={r.source_url}>Source message</ExtLink></>}
+            {r.used_on > 0 && <> · Used on {r.used_on} marketplace{r.used_on > 1 ? "s" : ""}</>}
             {r.requirement_text && <> · Requirement: {r.requirement_text} ({CONFIRM_LABEL[r.requirement_state]})</>}
             {r.action_title && <> · Action: {r.action_title} ({ACTION_STATUS[r.action_status]}{r.action_due ? `, due ${r.action_due}` : ""})</>}
             {r.status === "superseded" && r.superseded_at && <> · Superseded {dateTime(r.superseded_at)}</>}
@@ -236,6 +371,7 @@ function ResourceForm({ supplier, data, r, section, replacing, onClose, onSaved 
     resource_type: r.resource_type ?? types[0][0], title: r.title ?? "", link_url: r.link_url ?? "", note: r.note ?? "", source_url: r.source_url ?? "",
     effective_date: r.effective_date ?? "", last_confirmed_on: r.last_confirmed_on ?? (r.id ? "" : today()), series_key: r.series_key ?? "",
     requirement_id: r.requirement_id ?? "", action_id: r.action_id ?? "",
+    link_needed: !!r.link_needed, partner_specific: !!r.partner_specific, internal: !!r.internal,
   });
   const [signer, setSigner] = useSigner();
   const s = useSave();
@@ -249,7 +385,7 @@ function ResourceForm({ supplier, data, r, section, replacing, onClose, onSaved 
       : post("/supplier-resources", { ...body, supplier, supersedes_id: replacing?.id ?? null }));
     if (ok) { rememberSigner(signer); onSaved(); }
   };
-  const openActions = data.actions.filter((a: any) => a.status === "open" || a.id === f.action_id);
+  const openActions = (data.actions ?? []).filter((a: any) => a.status === "open" || a.id === f.action_id);
   return (
     <Overlay kind="modal" title={replacing ? `Replace "${replacing.title}"` : r.id ? "Edit resource" : "Add resource"} onClose={onClose}>
       <form onSubmit={submit} className="form-grid">
@@ -257,11 +393,14 @@ function ResourceForm({ supplier, data, r, section, replacing, onClose, onSaved 
         {replacing && <p className="hint wide">The earlier version is marked Superseded and stays in this supplier's history.</p>}
         <Field label="Type" required><Select value={f.resource_type} onChange={(v) => setF({ ...f, resource_type: v })} options={types} /></Field>
         <Field label="Title" required error={s.fe("title")}><input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} maxLength={200} /></Field>
-        <Field label="Link" error={s.fe("link_url")} hint="Drive, sheet, PDF or page."><input type="url" value={f.link_url} onChange={(e) => setF({ ...f, link_url: e.target.value })} /></Field>
+        <Field label="Link" error={s.fe("link_url")} hint="The document, folder, sheet or page itself (not the Slack message)."><input type="url" value={f.link_url} onChange={(e) => setF({ ...f, link_url: e.target.value })} /></Field>
+        {!f.link_url && <label className="check"><input type="checkbox" checked={f.link_needed} onChange={(e) => setF({ ...f, link_needed: e.target.checked })} /> Link needed (add it later)</label>}
+        {supplier !== "library" && <label className="check"><input type="checkbox" checked={f.partner_specific} onChange={(e) => setF({ ...f, partner_specific: e.target.checked })} /> Partner-specific</label>}
+        {supplier === "library" && <label className="check"><input type="checkbox" checked={f.internal} onChange={(e) => setF({ ...f, internal: e.target.checked })} /> Internal reference (not attached to marketplaces)</label>}
         <Field label="Source message link" error={s.fe("source_url")} hint="Slack or email link that confirms it, if any."><input type="url" value={f.source_url} onChange={(e) => setF({ ...f, source_url: e.target.value })} /></Field>
         <Field label="Effective date" error={s.fe("effective_date")} hint="Only when stated."><input type="date" value={f.effective_date} onChange={(e) => setF({ ...f, effective_date: e.target.value })} /></Field>
         <Field label="Last confirmed" error={s.fe("last_confirmed_on")}><input type="date" value={f.last_confirmed_on} onChange={(e) => setF({ ...f, last_confirmed_on: e.target.value })} /></Field>
-        {data.requirements.length > 0 && (
+        {data.requirements?.length > 0 && (
           <Field label="Linked requirement"><Select value={f.requirement_id} onChange={(v) => setF({ ...f, requirement_id: v })} empty="None"
             options={data.requirements.map((q: any) => [q.id, q.requirement.slice(0, 80)] as [string, string])} /></Field>
         )}
@@ -301,7 +440,7 @@ function ReviewQueue() {
               {i.status !== "open" && <Pill>{i.resolution === "applied" ? "Applied" : i.resolution === "replaced" ? "Replaced" : i.resolution === "out_of_scope" ? "Out of scope" : "Dismissed"}</Pill>}
             </div>
             {i.summary && <div className="pre">{i.summary}</div>}
-            {i.format === 2 ? (
+            {i.field === "completion" ? <div className="hint">{i.question}</div> : i.format === 2 ? (
               <div className="hint">
                 <strong>{FIELD_LABEL[i.field]}</strong>: current value {fmtValue(i.field, i.current_value)}. Competing values:
                 {i.options.map((o: any, n: number) => <span key={n}> {n > 0 && "vs"} <strong>{fmtValue(i.field, o.change.to)}</strong>
@@ -315,7 +454,7 @@ function ReviewQueue() {
             {i.status === "open" && (
               <div className="row-gap">
                 {i.format === 2 && i.options.map((o: any, n: number) => <button key={n} className="btn small primary" onClick={() => setDecide({ item: i, option: n })}>{
-                  i.field === "application_date" ? `Apply date: ${o.change.to}` : `Apply status: ${fmtValue(i.field, o.change.to)}`}</button>)}
+                  o.change.type === "complete" ? o.label : i.field === "application_date" ? `Apply date: ${o.change.to}` : `Apply status: ${fmtValue(i.field, o.change.to)}`}</button>)}
                 <button className="btn small ghost" onClick={() => setDecide({ item: i, option: null })}>Dismiss</button>
               </div>
             )}
@@ -341,13 +480,13 @@ function DecisionForm({ item, option, onClose, onSaved }: { item: any; option: n
       : post(`/review-items/${item.id}/dismiss`, { note, version: item.version, signer_name: signer }));
     if (ok) { rememberSigner(signer); onSaved(); }
   };
-  const title = opt ? (item.field === "application_date" ? `Apply date: ${opt.change.to}` : `Apply status: ${fmtValue(item.field, opt.change.to)}`) : "Dismiss";
+  const title = opt ? (opt.change.type === "complete" ? opt.label : item.field === "application_date" ? `Apply date: ${opt.change.to}` : `Apply status: ${fmtValue(item.field, opt.change.to)}`) : "Dismiss";
   return (
     <Overlay kind="modal" title={title} onClose={onClose}>
       <form onSubmit={submit} className="form-grid">
         <ErrorBox error={s.error} />
-        <p className="hint wide">{opt
-          ? `${item.supplier_hint}: ${FIELD_LABEL[item.field]} changes from ${fmtValue(item.field, item.current_value)} to ${fmtValue(item.field, opt.change.to)}. The item closes once this is saved.`
+        <p className="hint wide">{opt && opt.change.type === "complete" ? "Completes the chosen item with this Slack message as evidence. The other items stay open."
+          : opt ? `${item.supplier_hint}: ${FIELD_LABEL[item.field]} changes from ${fmtValue(item.field, item.current_value)} to ${fmtValue(item.field, opt.change.to)}. The item closes once this is saved.`
           : "Closes the item without changing the marketplace."}</p>
         {needsReason && <Field label="Reason" required><Select value={reason} onChange={setReason} options={REASON_LABEL} empty="Choose…" /></Field>}
         <Field label="Note (optional)" wide><textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} /></Field>
@@ -365,18 +504,39 @@ function FollowUps() {
   const d = useLoad(() => get(`/actions?status=open`), []);
   const [edit, setEdit] = useState<any | null>(null);
   const [addTask, setAddTask] = useState(false);
-  const [act, setAct] = useState<{ t: any; kind: "retry" | "dismiss" | "resolve" } | null>(null);
+  const [act, setAct] = useState<{ t: any; kind: "retry" | "dismiss" } | null>(null);
+  const [sel, setSel] = useState<string[]>([]);
+  const [bulk, setBulk] = useState(false);
+  const all: any[] = t.data?.tasks ?? [];
+  const isOpen = (x: any) => x.resolution_state !== "resolved" && x.delivery_status !== "dismissed" && x.slack_status !== "cancelled";
+  const groups: [string, string, any[]][] = [
+    ["review", "Needs routing", all.filter((x) => isOpen(x) && x.route === "review")],
+    ["checkoff", "Check-off items", all.filter((x) => isOpen(x) && x.route === "checkoff")],
+    ["marketing", "Marketing tasks", all.filter((x) => isOpen(x) && x.route === "marketing")],
+    ["resolved", "Resolved", all.filter((x) => x.resolution_state === "resolved")],
+  ];
+  const reload = () => { setSel([]); t.reload(); };
+  const toggle = (id: string) => setSel(sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]);
   return (
     <>
-      <p className="hint">Corporate Gifts tasks go to the Marketing Dashboard, where they are reviewed and assigned, then appear in Marketing Tasks (Task Tracker). Task Tracker keeps the owner and completion.</p>
+      <p className="hint">Marketing tasks go to the Marketing Dashboard for review and assignment, then appear in Marketing Tasks (Task Tracker). Work owned outside Marketing (including partners) is a check-off item, shown here and in the dashboard. Items without a clear owner wait for a routing decision. Resolve works the same in both apps.</p>
       <div className="filters">
         <Select value={status} onChange={setStatus} options={{ review: `To review${t.data ? ` (${t.data.to_review})` : ""}`, active: "Not dismissed or resolved", all: "All" }} aria-label="Tasks shown" />
         <button className="btn small" onClick={() => setAddTask(true)}>Add task</button>
       </div>
       {t.loading && !t.data && <Loading />}
       <ErrorBox error={t.error} />
-      {t.data && t.data.tasks.length === 0 && <Empty>No Corporate Gifts tasks.</Empty>}
-      {t.data && <TaskList tasks={t.data.tasks} onRetry={(x) => setAct({ t: x, kind: "retry" })} onDismiss={(x) => setAct({ t: x, kind: "dismiss" })} onResolve={(x) => setAct({ t: x, kind: "resolve" })} />}
+      {t.data && all.length === 0 && <Empty>No Corporate Gifts tasks.</Empty>}
+      {t.data && groups.map(([key, title, items]) => items.length > 0 && (
+        <Section key={key} title={title} count={items.length} defaultOpen={key !== "resolved"}
+          actions={key === "checkoff" ? <><button className="btn small" onClick={() => setSel(sel.length === items.length ? [] : items.map((x) => x.id))}>{sel.length === items.length ? "Clear" : "Select all"}</button>
+            <button className="btn small primary" disabled={!sel.length} onClick={() => setBulk(true)}>Mark done ({sel.length})</button></> : undefined}>
+          <TaskList tasks={items} onChanged={reload} select={key === "checkoff" ? { ids: sel, toggle } : undefined}
+            onRetry={(x) => setAct({ t: x, kind: "retry" })} onDismiss={(x) => setAct({ t: x, kind: "dismiss" })} />
+        </Section>
+      ))}
+      {bulk && <MarkDoneForm ids={sel} onClose={() => setBulk(false)} onSaved={(failed) => { setBulk(false); t.reload(); setSel(failed); }} />}
+      <Routing onDone={reload} />
       <h3>Other follow-ups (entered by hand)</h3>
       <div className="filters"><button className="btn small" onClick={() => setEdit({})}>Add action, blocker or decision</button></div>
       {d.data && d.data.actions.length === 0 && <Empty>Nothing open.</Empty>}
@@ -401,7 +561,95 @@ function FollowUps() {
   );
 }
 
-function TaskActionForm({ t, kind, onClose, onSaved }: { t: any; kind: "retry" | "dismiss" | "resolve"; onClose: () => void; onSaved: () => void }) {
+/** Bulk "Mark done" for check-off items. Items that fail stay selected for a retry. */
+function MarkDoneForm({ ids, onClose, onSaved }: { ids: string[]; onClose: () => void; onSaved: (failed: string[]) => void }) {
+  const [signer, setSigner] = useSigner();
+  const [on, setOn] = useState("");
+  const [res, setRes] = useState<any>(null);
+  const s = useSave();
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    let out: any;
+    const ok = await s.run(async () => { out = await post("/task-requests/mark-done", { ids, completed_on: on || null, signer_name: signer }); });
+    if (ok) { rememberSigner(signer); setRes(out); }
+  };
+  const failed = (res?.results ?? []).filter((r: any) => r.outcome === "failed");
+  return (
+    <Overlay kind="modal" title={`Mark ${ids.length} item(s) done`} onClose={() => res ? onSaved(failed.map((f: any) => f.id)) : onClose()}>
+      <form onSubmit={submit} className="form-grid">
+        <ErrorBox error={s.error} />
+        {!res && <Field label="Completion date" hint="Leave empty for today."><input type="date" value={on} max={today()} onChange={(e) => setOn(e.target.value)} /></Field>}
+        {!res && <SignerField value={signer} onChange={setSigner} error={s.fe("signer_name")} />}
+        {res && <p className="wide">{res.results.length - failed.length} marked done{failed.length ? `; ${failed.length} failed and stay selected: ${failed.map((f: any) => f.message).join("; ")}` : ""}.</p>}
+        {!res ? <FormActions saving={s.saving} onCancel={onClose} label="Mark done" />
+          : <p className="wide"><button type="button" className="btn small" onClick={() => onSaved(failed.map((f: any) => f.id))}>Close</button></p>}
+      </form>
+    </Overlay>
+  );
+}
+
+/** Owner directory and routing of already imported tasks (preview first). */
+function Routing({ onDone }: { onDone: () => void }) {
+  const o = useLoad(() => get("/owners"), []);
+  const [edit, setEdit] = useState<any | null>(null);
+  const [res, setRes] = useState<any>(null);
+  const [signer, setSigner] = useSigner();
+  const s = useSave();
+  const run = async (dry: boolean) => {
+    let out: any;
+    const ok = await s.run(async () => { out = await post("/task-requests/reroute", { dry_run: dry, signer_name: signer }); });
+    if (ok) { rememberSigner(signer); setRes(out); if (!dry) onDone(); }
+  };
+  const TEAM: Record<string, string> = { marketing: "Marketing team", outside: "Outside Marketing", external: "External partner" };
+  return (
+    <Section title="Owners and routing" defaultOpen={false}>
+      <p className="hint">Tasks are routed by their owner: a Marketing team member → Marketing task; someone outside Marketing or a partner → check-off item; no owner, several owners or an unknown name → Needs routing. Routes chosen by a person and tasks already in Task Tracker are never changed.</p>
+      <div className="filters"><button className="btn small" onClick={() => setEdit({})}>Add owner</button></div>
+      {o.data && (o.data.owners.length ? <div className="table-wrap"><table className="dense">
+        <thead><tr><th>Name</th><th>Other names</th><th>Team</th><th>Active</th><th /></tr></thead>
+        <tbody>{o.data.owners.map((x: any) => <tr key={x.id}><td>{x.name}</td><td>{(x.aliases ?? []).join(", ") || "—"}</td><td>{TEAM[x.team]}</td><td>{x.active ? "Yes" : "No"}</td>
+          <td><button className="btn ghost small" onClick={() => setEdit(x)}>Edit</button></td></tr>)}</tbody></table></div> : <Empty>No owners yet: every task needs a routing decision.</Empty>)}
+      <div className="form-grid">
+        <SignerField value={signer} onChange={setSigner} error={s.fe("signer_name")} />
+        <ErrorBox error={s.error} />
+        <p className="wide"><button type="button" className="btn small" disabled={s.saving} onClick={() => run(true)}>Preview routing of existing tasks</button>{" "}
+          {res?.dry_run && res.changes.length > 0 && <button type="button" className="btn small primary" disabled={s.saving} onClick={() => run(false)}>Apply routing</button>}</p>
+        {res && <div className="wide">
+          <p>{res.dry_run ? "Preview (nothing changed): " : "Done: "}{res.changes.length} task(s) change route · {res.kept} kept as they are (sent, resolved or decided by a person).</p>
+          {res.changes.length > 0 && <ul className="timeline">{res.changes.map((c: any) => <li key={c.id}>{c.title} <span className="hint">· {c.marketplaces.join(", ")} · {ROUTE_LABEL[c.from]?.[0]} → <strong>{ROUTE_LABEL[c.to]?.[0]}</strong> ({c.reason})</span></li>)}</ul>}
+        </div>}
+      </div>
+      {edit && <OwnerForm x={edit} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); o.reload(); }} />}
+    </Section>
+  );
+}
+
+function OwnerForm({ x, onClose, onSaved }: { x: any; onClose: () => void; onSaved: () => void }) {
+  const [f, setF] = useState({ name: x.name ?? "", aliases: (x.aliases ?? []).join(", "), team: x.team ?? "marketing", active: x.active ?? true, note: x.note ?? "" });
+  const [signer, setSigner] = useSigner();
+  const s = useSave();
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const body = { name: f.name, aliases: f.aliases.split(",").map((a: string) => a.trim()).filter(Boolean), team: f.team, active: f.active, note: f.note, signer_name: signer };
+    const ok = await s.run(() => x.id ? patch(`/owners/${x.id}`, { ...body, version: x.version }) : post("/owners", body));
+    if (ok) { rememberSigner(signer); onSaved(); }
+  };
+  return (
+    <Overlay kind="modal" title={x.id ? "Edit owner" : "Add owner"} onClose={onClose}>
+      <form onSubmit={submit} className="form-grid">
+        <ErrorBox error={s.error} />
+        <Field label="Name" required error={s.fe("name")}><input value={f.name} maxLength={80} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+        <Field label="Other names" hint="Comma-separated spellings used in Slack."><input value={f.aliases} onChange={(e) => setF({ ...f, aliases: e.target.value })} /></Field>
+        <Field label="Team" required><Select value={f.team} onChange={(v) => setF({ ...f, team: v })} options={{ marketing: "Marketing team", outside: "Outside Marketing", external: "External partner" }} /></Field>
+        <label className="check"><input type="checkbox" checked={f.active} onChange={(e) => setF({ ...f, active: e.target.checked })} /> Active</label>
+        <SignerField value={signer} onChange={setSigner} error={s.fe("signer_name")} />
+        <FormActions saving={s.saving} onCancel={onClose} />
+      </form>
+    </Overlay>
+  );
+}
+
+function TaskActionForm({ t, kind, onClose, onSaved }: { t: any; kind: "retry" | "dismiss"; onClose: () => void; onSaved: () => void }) {
   const [signer, setSigner] = useSigner();
   const s = useSave();
   const submit = async (e: FormEvent) => {
@@ -410,15 +658,14 @@ function TaskActionForm({ t, kind, onClose, onSaved }: { t: any; kind: "retry" |
     if (ok) { rememberSigner(signer); onSaved(); }
   };
   return (
-    <Overlay kind="modal" title={kind === "retry" ? "Retry delivery" : kind === "resolve" ? "Resolve task" : "Dismiss task"} onClose={onClose}>
+    <Overlay kind="modal" title={kind === "retry" ? "Retry delivery" : "Dismiss task"} onClose={onClose}>
       <form onSubmit={submit} className="form-grid">
         <ErrorBox error={s.error} />
         <p className="hint wide">{kind === "retry"
           ? `"${t.title}" goes back to the Marketing Dashboard. It is sent with the same id, so Task Tracker can never get a second copy.`
-          : kind === "resolve" ? `"${t.title}" was handled without a task. It leaves To review here and in the Marketing Dashboard (after its next read), and no task is created. If the dashboard had already created the task, that task stays and is shown here with its link.`
           : `"${t.title}" will not be sent to Task Tracker. Its history is kept.`}</p>
         <SignerField value={signer} onChange={setSigner} error={s.fe("signer_name")} />
-        <FormActions saving={s.saving} onCancel={onClose} label={kind === "retry" ? "Retry delivery" : kind === "resolve" ? "Resolve" : "Dismiss"} />
+        <FormActions saving={s.saving} onCancel={onClose} label={kind === "retry" ? "Retry delivery" : "Dismiss"} />
       </form>
     </Overlay>
   );
@@ -575,6 +822,7 @@ function SlackScans() {
 const SKIP_LABEL: Record<string, string> = {
   supplier_role: "about a company's product-supplier role", not_listed: "not about an eligible Marketplaces record",
   role_unclear: "about a marketplace whose sales role is unclear", not_confirmed: "not confirmed", not_open: "about work already done",
+  progress: "progress updates (nothing completed)", no_match: "completions with no matching item",
 };
 
 /** What a scan will change (preview) or changed (save). Out-of-scope findings are counted, never listed. */
@@ -583,6 +831,8 @@ function ChangeList({ r }: { r: any }) {
   const resources = r.changes.filter((c: any) => c.type === "resource");
   const tasks = r.changes.filter((c: any) => c.type === "task");
   const conflicts = r.changes.filter((c: any) => c.type === "conflict");
+  const completions = r.changes.filter((c: any) => c.type === "completion");
+  const COMPLETION: Record<string, [string, string]> = { complete: ["Completes", "ok"], complete_in_tracker: ["Completes in Task Tracker", "ok"], already_done: ["Already done (evidence added)", "neutral"], confirm: ["Confirm completion (review)", "warn"] };
   const skipped = Object.entries(r.skipped_reasons ?? {}).filter(([, n]) => (n as number) > 0);
   return (
     <div className="wide">
@@ -590,12 +840,19 @@ function ChangeList({ r }: { r: any }) {
         <thead><tr><th>Marketplace</th><th>Field</th><th>From</th><th>To</th></tr></thead>
         <tbody>{status.map((c: any, n: number) => <tr key={n}><td>{c.partner.name}</td><td>{FIELD_LABEL[c.field]}</td><td>{fmtValue(c.field, c.from)}</td><td><strong>{fmtValue(c.field, c.to)}</strong></td></tr>)}</tbody>
       </table></div></>}
-      {resources.length > 0 && <><h4>Resources ({resources.length})</h4><ul className="timeline">
-        {resources.map((c: any, n: number) => <li key={n}><Pill tone={c.action === "add" ? "ok" : "info"}>{c.action === "add" ? "Add" : "Update"}</Pill> {c.title} <span className="hint">· {c.partner.name}{c.supersedes ? ` · supersedes ${c.supersedes} earlier version${c.supersedes > 1 ? "s" : ""}` : ""}</span></li>)}
+      {resources.length > 0 && <><h4>Resources ({resources.length})</h4><div className="table-wrap"><table className="dense">
+        <thead><tr><th>Marketplace</th><th>Type</th><th>Resource</th><th>Outcome</th></tr></thead>
+        <tbody>{resources.map((c: any, n: number) => { const [l, t] = RES_ACTION[c.action] ?? [c.action, "neutral"]; return <tr key={n}>
+          <td>{c.partner ? c.partner.name : "General materials"}</td><td>{TYPE_LABEL[c.resource_type]?.[0] ?? c.resource_type}</td>
+          <td>{c.title}{c.link === "slack_file" ? " (Slack file)" : ""}{c.supersedes ? ` · supersedes ${c.supersedes}` : ""}</td><td><Pill tone={t as any}>{l}</Pill></td></tr>; })}</tbody>
+      </table></div></>}
+      {tasks.length > 0 && <><h4>Corporate Gifts tasks ({tasks.length})</h4><ul className="timeline">
+        {tasks.map((c: any, n: number) => <li key={n}><Pill tone={c.action === "create" ? "ok" : "info"}>{c.action === "create" ? "Create" : "Update"}</Pill> <Pill tone={(ROUTE_LABEL[c.route]?.[1] ?? "neutral") as any}>{ROUTE_LABEL[c.route]?.[0] ?? c.route}</Pill> {c.title}
+          <span className="hint"> · {c.partners.map((p: any) => p.name).join(", ")}{c.owner ? ` · owner ${c.owner}` : ""}{c.due_date ? ` · due ${c.due_date}` : ""}{c.route === "review" && c.route_reason ? ` · ${c.route_reason}` : ""}{c.note ? ` · ${c.note}` : ""}</span></li>)}
       </ul></>}
-      {tasks.length > 0 && <><h4>Tasks for Marketing Tasks ({tasks.length})</h4><ul className="timeline">
-        {tasks.map((c: any, n: number) => <li key={n}><Pill tone={c.action === "create" ? "ok" : "info"}>{c.action === "create" ? "Create" : "Update"}</Pill> {c.title}
-          <span className="hint"> · {c.partners.map((p: any) => p.name).join(", ")}{c.owner ? ` · owner ${c.owner}` : ""}{c.due_date ? ` · due ${c.due_date}` : ""}{c.note ? ` · ${c.note}` : ""}</span></li>)}
+      {completions.length > 0 && <><h4>Completions ({completions.length})</h4><ul className="timeline">
+        {completions.map((c: any, n: number) => { const [l, t] = COMPLETION[c.action] ?? [c.action, "neutral"]; return <li key={n}><Pill tone={t as any}>{l}</Pill> {c.task_title ?? c.title}
+          <span className="hint"> · {c.partners.map((p: any) => p.name).join(", ")}{c.completed_on ? ` · completed ${c.completed_on}` : ""} · <ExtLink href={c.source}>supporting message</ExtLink></span></li>; })}
       </ul></>}
       {conflicts.length > 0 && <><h4>Conflicts needing a decision ({conflicts.length})</h4><ul className="timeline">
         {conflicts.map((c: any, n: number) => <li key={n}><Pill tone="warn">{FIELD_LABEL[c.field]}</Pill> {c.partner.name}: current {fmtValue(c.field, c.current)}; messages say {c.values.map((v: string) => fmtValue(c.field, v)).join(" vs ")}</li>)}
@@ -657,11 +914,11 @@ function SlackImport({ onSaved }: { onSaved: () => void }) {
     if (dry) setPreview(res);
     else { setSaved(res); setPreview(null); setPass(null); onSaved(); }
   };
-  const counts = (r: any) => `${r.added} added · ${r.updated} updated · ${r.flagged} conflicts for review · ${r.unchanged} unchanged · ${r.skipped} out of scope`;
+  const counts = (r: any) => `${r.added} added · ${r.updated} updated · ${r.flagged} for review · ${r.unchanged} unchanged · ${r.skipped} skipped`;
   return (
     <Section title="Import a scan">
       <div className="form-grid">
-        <Field label="Scan file (one channel)" error={fileError} hint="JSON in the sbcg-slack-v2 format. Preview first; nothing is saved until you press Save.">
+        <Field label="Scan file (one channel)" error={fileError} hint="JSON in the sbcg-slack-v2 format (with resource links, Link needed, general materials and completions). Preview first; nothing is saved until you press Save.">
           <input type="file" accept=".json,application/json" onChange={(e) => pick(e.target.files?.[0])} />
         </Field>
         <SignerField value={signer} onChange={setSigner} error={s.fe("signer_name")} />
@@ -674,7 +931,7 @@ function SlackImport({ onSaved }: { onSaved: () => void }) {
           </p>
         )}
         {preview && <><p className="wide"><strong>Preview ({CHANNEL_LABEL[preview.channel]}), nothing saved yet:</strong> {counts(preview)}</p><ChangeList r={preview} /></>}
-        {saved && <><p className="wide"><strong>Saved {CHANNEL_LABEL[saved.channel]}:</strong> {counts(saved)}. Tasks now wait in the Marketing Dashboard for review; conflicts are in the Review queue.</p><ChangeList r={saved} /></>}
+        {saved && <><p className="wide"><strong>Saved {CHANNEL_LABEL[saved.channel]}:</strong> {counts(saved)}. Marketing tasks now wait in the Marketing Dashboard; check-off items and items needing routing are under Corporate Gifts tasks; decisions are in the Review queue.</p><ChangeList r={saved} /></>}
       </div>
     </Section>
   );
