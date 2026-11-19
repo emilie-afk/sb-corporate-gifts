@@ -8,8 +8,13 @@
 // Each finding becomes exactly one of:
 //   - status   → the partner's relationship status and/or application status/date (latest confirmed evidence wins);
 //   - resource → a fact, document, term or decision under the partner's Resources (with source link and date);
-//   - task     → a Corporate Gifts task request for one partner or a named group of partners; the Marketing
-//                Dashboard delivers it to Task Tracker (Marketing Tasks) and reports back;
+//   - resource → may also be a general corporate material (library, no marketplace) or wait for its link
+//                ("Link needed"); the document link (link_url) is kept apart from the Slack message (source);
+//   - task     → a Corporate Gifts task request for one partner or a named group of partners, routed by owner:
+//                Marketing tasks go through the Marketing Dashboard to Task Tracker (Marketing Tasks); work owned
+//                outside Marketing becomes a check-off item; an unclear owner waits for a routing decision;
+//   - completion → an explicit confirmation that one existing action is done (matched by its action id and
+//                marketplaces); ambiguous confirmations go to the review queue ("Confirm completion");
 //   - conflict → a review item, only when competing values block one specific field change.
 // Everything is applied in ONE transaction. Stable keys make a rescan, an edit or the other channel update the same
 // record; older evidence read later never overwrites newer evidence. The channel's scan position advances only when
@@ -22,7 +27,8 @@ import { audit, type Actor } from "../audit";
 import { HttpError } from "../http";
 import { STATUSES, INACTIVE_STATUSES, INACTIVE_REASONS } from "../routes/marketplaces";
 import { createResource, supersede } from "../routes/suppliers";
-import { RESOURCE_TYPES, RESOURCE_TYPE_KEYS, matchEligiblePartner, nameKey } from "./suppliers";
+import { RESOURCE_TYPES, RESOURCE_TYPE_KEYS, matchEligiblePartner, nameKey, linkKey } from "./suppliers";
+import { routeFor, routeIsFree, resolveRequest, slackDate } from "./taskRouting";
 
 export const SLACK_SCHEMA = "sbcg-slack-v2";
 export const CHANNELS = ["seo", "teammarketing"] as const;
@@ -67,12 +73,20 @@ const statusFinding = z.object({
   .refine((f) => f.relationship_status || f.application_status || f.application_date, "A status finding needs relationship_status, application_status or application_date")
   .refine((f) => !f.relationship_status || !(INACTIVE_STATUSES as readonly string[]).includes(f.relationship_status) || !!f.reason, "An inactive relationship status needs a reason");
 const resourceFinding = z.object({
-  ...base, type: z.literal("resource"), partner: partnerRef,
+  ...base, type: z.literal("resource"),
+  partner: partnerRef.optional(),
+  library: z.literal(true).optional(),            // general corporate material: no marketplace, attachable by hand
   resource_type: z.enum(RESOURCE_TYPE_KEYS),
-  link_url: httpUrl.optional(),
+  link_url: httpUrl.optional(),                   // the document or site itself (never the Slack message)
+  link_kind: z.enum(["url", "slack_file"]).optional(),
+  link_needed: z.literal(true).optional(),        // mentioned (email, attachment) but no usable link yet
+  partner_specific: z.boolean().optional(),
+  internal: z.boolean().optional(),
   series: z.string().regex(/^[a-z0-9][a-z0-9:._-]{1,119}$/).optional(),
   effective_date: YMD.optional(),
-}).strict();
+}).strict()
+  .refine((f) => !!f.partner !== !!f.library, "A resource needs either a partner or library: true")
+  .refine((f) => !(f.link_needed && f.link_url), "link_needed and link_url exclude each other");
 const taskFinding = z.object({
   ...base, type: z.literal("task"), partners: z.array(partnerRef).min(1).max(20),
   task_id: KEY,                                   // stable action id: the same action always has the same id
@@ -80,13 +94,20 @@ const taskFinding = z.object({
   due: YMD.optional(),
   task_status: z.enum(["open", "done", "cancelled"]).default("open"),
 }).strict();
+const completionFinding = z.object({
+  ...base, type: z.literal("completion"), partners: z.array(partnerRef).min(1).max(20),
+  task_id: KEY.optional(),                        // the exact action confirmed done (its stable action id)
+  candidates: z.array(KEY).min(2).max(5).optional(),   // the message could mean any of these: a person confirms
+  state: z.enum(["done", "progress"]).default("done"),  // "progress" (e.g. "the catalog is ready") changes nothing
+  completed_on: YMD.optional(),                   // only when the message states another date than its own
+}).strict().refine((f) => !!f.task_id !== !!f.candidates, "A completion needs task_id or candidates");
 const conflictFinding = z.object({
   ...base, type: z.literal("conflict"), partner: partnerRef,
   field: z.enum(CONFLICT_FIELDS),
   values: z.array(z.object({ value: shortText(40), sources: z.array(source).max(10).optional() }).strict()).min(2).max(5),
 }).strict();
 
-export const findingSchema = z.union([statusFinding, resourceFinding, taskFinding, conflictFinding]);
+export const findingSchema = z.union([statusFinding, resourceFinding, taskFinding, completionFinding, conflictFinding]);
 export type Finding = z.infer<typeof findingSchema>;
 
 export const passSchema = z.object({
@@ -98,12 +119,14 @@ export const passSchema = z.object({
 }).strict();
 
 export type Outcome = "added" | "updated" | "flagged" | "unchanged" | "skipped";
-export type SkipReason = "supplier_role" | "not_listed" | "role_unclear" | "not_confirmed" | "not_open";
+export type SkipReason = "supplier_role" | "not_listed" | "role_unclear" | "not_confirmed" | "not_open" | "progress" | "no_match";
 type PartnerName = { id: string; name: string };
 export type Change =
   | { type: "status"; partner: PartnerName; field: "relationship_status" | "application_status" | "application_date"; from: string | null; to: string | null }
-  | { type: "resource"; partner: PartnerName; title: string; action: "add" | "update"; supersedes: number }
-  | { type: "task"; partners: PartnerName[]; title: string; action: "create" | "update"; due_date: string | null; owner: string | null; note?: string }
+  | { type: "resource"; partner: PartnerName | null; title: string; resource_type: string; link: "url" | "slack_file" | null;
+      action: "add" | "fill_link" | "exists" | "needs_link" | "update"; supersedes: number }
+  | { type: "task"; partners: PartnerName[]; title: string; action: "create" | "update"; due_date: string | null; owner: string | null; route: string; route_reason: string | null; note?: string }
+  | { type: "completion"; partners: PartnerName[]; title: string; task_title: string | null; action: "complete" | "complete_in_tracker" | "already_done" | "confirm"; completed_on: string | null; source: string }
   | { type: "conflict"; partner: PartnerName; field: string; current: string | null; values: string[] };
 export type PassResult = {
   channel: string; dry_run: boolean;
@@ -153,7 +176,7 @@ export async function applyPass(input: unknown, opts: { dryRun?: boolean; import
   const actor = opts.importedBy ?? WORKFLOW;
   const result: PassResult = {
     channel: pass.channel, dry_run: !!opts.dryRun, added: 0, updated: 0, flagged: 0, unchanged: 0, skipped: 0,
-    skipped_reasons: { supplier_role: 0, not_listed: 0, role_unclear: 0, not_confirmed: 0, not_open: 0 }, changes: [], findings: [],
+    skipped_reasons: { supplier_role: 0, not_listed: 0, role_unclear: 0, not_confirmed: 0, not_open: 0, progress: 0, no_match: 0 }, changes: [], findings: [],
   };
   try {
     await tx(async (c) => {
@@ -163,6 +186,8 @@ export async function applyPass(input: unknown, opts: { dryRun?: boolean; import
         const r = await applyFinding(c, f, actor);
         if (r.outcome === "skipped") { result.skipped++; result.skipped_reasons[r.reason]++; continue; }
         appliedKeys.add(f.key);
+        // "Already exists" and "still needs a link" are shown in the preview even though nothing changes.
+        if (r.outcome === "unchanged") { result.unchanged++; result.findings.push({ key: f.key, outcome: r.outcome, target: r.target }); result.changes.push(...r.changes); continue; }
         result[r.outcome]++;
         result.findings.push({ key: f.key, outcome: r.outcome, target: r.target });
         result.changes.push(...r.changes);
@@ -210,8 +235,10 @@ type Ctx = { prev: any; hash: string; sources: any[]; latestUrl: string; latestD
 async function applyFinding(c: pg.PoolClient, f: Finding, actor: Actor): Promise<Applied> {
   // Scope first: nothing is written for out-of-scope findings.
   if (f.role !== "selling") return { outcome: "skipped", reason: "supplier_role" };
-  if (f.type !== "conflict" && f.certainty !== "confirmed") return { outcome: "skipped", reason: "not_confirmed" };
-  const refs = f.type === "task" ? f.partners : [f.partner];
+  if (f.type === "completion" && f.state === "progress") return { outcome: "skipped", reason: "progress" };
+  const ambiguousCompletion = f.type === "completion" && !!f.candidates;
+  if (f.type !== "conflict" && !ambiguousCompletion && f.certainty !== "confirmed") return { outcome: "skipped", reason: "not_confirmed" };
+  const refs = f.type === "task" || f.type === "completion" ? f.partners : f.type === "resource" && f.library ? [] : [f.partner!];
   const partners: PartnerName[] = [];
   for (const ref of refs) {
     const m = await matchEligiblePartner(c, ref);
@@ -233,13 +260,19 @@ async function applyFinding(c: pg.PoolClient, f: Finding, actor: Actor): Promise
     const keep = older ? prev.evidence_ts : evidenceTs;
     await c.query("update slack_findings set sources = $2, evidence_ts = $3, updated_at = now() where key = $1", [f.key, JSON.stringify(sources), keep]);
     if (prev.target_type === "review_item") await c.query("update review_items set sources = $2, updated_at = now() where id = $1", [prev.target_id, JSON.stringify(sources)]);
-    return { outcome: "unchanged", target: `${prev.target_type}:${prev.target_id}`, changes: [] };
+    const changes: Change[] = [];
+    if (f.type === "resource" && prev.target_type === "supplier_resource") {
+      const r = (await c.query("select * from supplier_resources where id = $1", [prev.target_id])).rows[0];
+      if (r) changes.push({ type: "resource", partner: partners[0] ?? null, title: r.title, resource_type: r.resource_type, link: r.link_kind ?? null, action: r.link_needed ? "needs_link" : "exists", supersedes: 0 });
+    }
+    return { outcome: "unchanged", target: `${prev.target_type}:${prev.target_id}`, changes };
   }
 
   switch (f.type) {
     case "status": return applyStatus(c, f, partners[0], ctx);
-    case "resource": return applyResource(c, f, partners[0], ctx);
+    case "resource": return applyResource(c, f, partners[0] ?? null, ctx);
     case "task": return applyTask(c, f, partners, ctx);
+    case "completion": return applyCompletion(c, f, partners, ctx);
     case "conflict": return applyConflict(c, f, partners[0], ctx);
   }
 }
@@ -305,34 +338,65 @@ async function applyStatus(c: pg.PoolClient, f: z.infer<typeof statusFinding>, p
 }
 
 // ------------------------------------------------------------------ resources
-async function applyResource(c: pg.PoolClient, f: z.infer<typeof resourceFinding>, p: PartnerName, ctx: Ctx): Promise<Applied> {
-  const fields = {
-    resource_type: f.resource_type, title: f.title, link_url: f.link_url ?? null, note: f.summary ?? null, source_url: ctx.latestUrl,
-    effective_date: f.effective_date ?? null, last_confirmed_on: ctx.latestDate, series_key: f.series ?? null,
-  };
+// One resource per marketplace (or in the library) per document: matched by the finding key, then by the same link
+// on the same marketplace, then by a resource of the same type and title (or series) that is still waiting for its
+// link, then by a manually added resource with the same title. Outcomes shown in the preview: adds a resource, fills
+// in an existing link, already exists, still needs a link (or updates the existing resource).
+async function applyResource(c: pg.PoolClient, f: z.infer<typeof resourceFinding>, p: PartnerName | null, ctx: Ctx): Promise<Applied> {
+  const lk = linkKey(f.link_url);
+  const kind = f.link_url ? (f.link_kind ?? (lk?.startsWith("slack-file:") ? "slack_file" : "url")) : null;
+  const target = p ? "r.marketplace_id = $1" : "r.scope = 'library'";
+  const tParams = p ? [p.id] : [];
+  const live = "r.status = 'current' and r.removed_at is null and r.excluded_at is null";
+  const n = tParams.length;
   let row = (await c.query(`select * from supplier_resources where finding_key = $1 for update`, [f.key])).rows[0];
-  // Match an existing record (e.g. added manually) before creating: same partner, same title, still current.
-  if (!row) row = (await c.query(
-    `select * from supplier_resources where marketplace_id = $1 and finding_key is null and status = 'current' and removed_at is null and excluded_at is null for update`, [p.id]))
-    .rows.find((r: any) => nameKey(r.title) === nameKey(f.title));
-  let outcome: "added" | "updated";
-  if (row) {
-    const after = (await c.query(
-      `update supplier_resources set marketplace_id = $12, vendor_id = null, resource_type = $2, section = $3, title = $4, link_url = coalesce($5, link_url), note = coalesce($6, note),
-         source_url = $7, effective_date = coalesce($8, effective_date), last_confirmed_on = $9, series_key = coalesce($10, series_key),
-         finding_key = $11, excluded_at = null, excluded_reason = null, updated_at = now(), version = version + 1 where id = $1 returning *`,
-      [row.id, f.resource_type, RESOURCE_TYPES[f.resource_type], fields.title, fields.link_url, fields.note, fields.source_url, fields.effective_date,
-        fields.last_confirmed_on, fields.series_key, f.key, p.id])).rows[0];
-    await audit(c, ctx.actor, { entityType: "supplier_resource", entityId: row.id, marketplaceId: p.id, action: "slack_update", after: { title: after.title, source_url: after.source_url } });
-    row = after;
-    outcome = "updated";
+  let sameLink: any = null;
+  if (lk) sameLink = (await c.query(`select * from supplier_resources r where ${target} and r.link_key = $${n + 1} and ${live} for update`, [...tParams, lk])).rows[0] ?? null;
+  if (!row && sameLink) row = sameLink;
+  if (!row) {
+    const waiting = (await c.query(`select * from supplier_resources r where ${target} and r.link_needed and r.resource_type = $${n + 1} and ${live} for update`, [...tParams, f.resource_type])).rows;
+    row = waiting.find((r: any) => (f.series && r.series_key === f.series) || nameKey(r.title) === nameKey(f.title)) ?? null;
+  }
+  if (!row) row = (await c.query(`select * from supplier_resources r where ${target} and r.finding_key is null and ${live} for update`, tParams)).rows
+    .find((r: any) => nameKey(r.title) === nameKey(f.title)) ?? null;
+
+  const base = { partner: p, title: f.title, resource_type: f.resource_type, link: kind as any, supersedes: 0 };
+  let action: "add" | "fill_link" | "exists" | "needs_link" | "update";
+  let created = false;
+  if (row && sameLink && row.id === sameLink.id && row.finding_key && row.finding_key !== f.key) {
+    // The same document already recorded from another finding (e.g. the other channel): nothing new.
+    action = "exists";
+  } else if (row) {
+    const fills = row.link_needed && !!f.link_url;
+    const linkChanged = !!lk && row.link_key !== lk;
+    if (linkChanged && sameLink && sameLink.id !== row.id) { row = sameLink; action = "exists"; }
+    else {
+      const after = (await c.query(
+        `update supplier_resources set resource_type = $2, section = $3, title = $4, link_url = coalesce($5, link_url), link_key = coalesce($6, link_key),
+           link_kind = coalesce($7, link_kind), link_needed = (coalesce($5, link_url) is null and ($8 or link_needed)), note = coalesce($9, note), source_url = $10,
+           effective_date = coalesce($11, effective_date), last_confirmed_on = $12, series_key = coalesce($13, series_key),
+           partner_specific = coalesce($14, partner_specific), internal = coalesce($15, internal),
+           finding_key = coalesce(finding_key, $16), excluded_at = null, excluded_reason = null, updated_at = now(), version = version + 1 where id = $1 returning *`,
+        [row.id, f.resource_type, RESOURCE_TYPES[f.resource_type], f.title, f.link_url ?? null, lk, kind, !!f.link_needed, f.summary ?? null, ctx.latestUrl,
+          f.effective_date ?? null, ctx.latestDate, f.series ?? null, f.partner_specific ?? null, f.internal ?? null, f.key])).rows[0];
+      await audit(c, ctx.actor, { entityType: "supplier_resource", entityId: row.id, marketplaceId: p?.id ?? null, action: fills ? "link_added" : "slack_update",
+        after: { title: after.title, link_url: after.link_url, source_url: after.source_url } });
+      action = fills ? "fill_link" : after.link_needed ? "needs_link" : linkChanged ? "update" : (row.title === f.title && row.resource_type === f.resource_type ? "exists" : "update");
+      row = after;
+    }
   } else {
-    row = await createResource(c, { kind: "partner", id: p.id }, fields, ctx.actor, { origin: "slack", finding_key: f.key });
-    outcome = "added";
+    const fields = {
+      resource_type: f.resource_type, title: f.title, link_url: f.link_url ?? null, note: f.summary ?? null, source_url: ctx.latestUrl,
+      effective_date: f.effective_date ?? null, last_confirmed_on: ctx.latestDate, series_key: f.series ?? null,
+      link_kind: kind, link_needed: !!f.link_needed, partner_specific: !!f.partner_specific, internal: !!f.internal,
+    };
+    row = await createResource(c, p ? { kind: "partner", id: p.id } : null, fields, ctx.actor, { origin: "slack", finding_key: f.key });
+    action = f.link_needed ? "needs_link" : "add";
+    created = true;
   }
   // A confirmed replacement in the same series supersedes the earlier current version(s); they stay in history.
   let superseded = 0;
-  if (f.series && row.status === "current") {
+  if (p && f.series && row.status === "current" && action !== "exists") {
     const olderRows = (await c.query(
       `select id from supplier_resources where marketplace_id = $1 and series_key = $2 and status = 'current' and removed_at is null and id <> $3
          and coalesce(effective_date, last_confirmed_on, created_at::date) <= coalesce($4::date, $5::date)`,
@@ -341,7 +405,8 @@ async function applyResource(c: pg.PoolClient, f: z.infer<typeof resourceFinding
   }
   await recordFinding(c, f, ctx, "supplier_resource", row.id);
   await closeReviewByFinding(c, f.key, ctx.actor);
-  return { outcome, target: `supplier_resource:${row.id}`, changes: [{ type: "resource", partner: p, title: f.title, action: outcome === "added" ? "add" : "update", supersedes: superseded }] };
+  const outcome = created ? "added" : action === "exists" || action === "needs_link" ? "unchanged" : "updated";
+  return { outcome, target: `supplier_resource:${row.id}`, changes: [{ type: "resource", ...base, link: row.link_kind ?? kind, action, supersedes: superseded }] };
 }
 
 // ------------------------------------------------------------------ tasks
@@ -355,19 +420,29 @@ async function applyTask(c: pg.PoolClient, f: z.infer<typeof taskFinding>, partn
   if (!row) {
     // A historical or completed action does not establish an open task.
     if (f.task_status !== "open") return { outcome: "skipped", reason: "not_open" };
+    const rt = await routeFor(c, next.owner_hint);
     const ins = (await c.query(
-      `insert into corporate_task_requests (task_key, title, brief, owner_hint, due_date, slack_status, marketplace_ids, source_refs, origin, created_by)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,'slack',$9) returning *`,
-      [f.task_id, next.title, next.brief, next.owner_hint, next.due_date, next.slack_status, ids, JSON.stringify(ctx.sources), ctx.actor.signer])).rows[0];
+      `insert into corporate_task_requests (task_key, title, brief, owner_hint, due_date, slack_status, marketplace_ids, source_refs, origin, created_by,
+         route, route_reason, owner_name, owner_team)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,'slack',$9,$10,$11,$12,$13) returning *`,
+      [f.task_id, next.title, next.brief, next.owner_hint, next.due_date, next.slack_status, ids, JSON.stringify(ctx.sources), ctx.actor.signer,
+        rt.route, rt.reason, rt.owner_name, rt.owner_team])).rows[0];
     await audit(c, ctx.actor, { entityType: "corporate_task_request", entityId: ins.id, action: "slack_create",
-      after: { title: ins.title, marketplace_ids: ids, due_date: ins.due_date, sources: ctx.sources.map((s: any) => s.permalink) } });
+      after: { title: ins.title, marketplace_ids: ids, due_date: ins.due_date, route: rt.route, sources: ctx.sources.map((s: any) => s.permalink) } });
     await recordFinding(c, f, ctx, "corporate_task_request", ins.id);
-    return { outcome: "added", target: `corporate_task_request:${ins.id}`, changes: [{ type: "task", partners, title: f.title, action: "create", due_date: next.due_date, owner: next.owner_hint }] };
+    return { outcome: "added", target: `corporate_task_request:${ins.id}`, changes: [{ type: "task", partners, title: f.title, action: "create", due_date: next.due_date, owner: next.owner_hint, route: rt.route, route_reason: rt.reason }] };
   }
   const cur = { title: row.title, brief: row.brief, owner_hint: row.owner_hint, due_date: row.due_date ? new Date(row.due_date).toISOString().slice(0, 10) : null, slack_status: row.slack_status, ids: [...row.marketplace_ids].sort() };
   // Ownership and completion belong to Task Tracker once delivered; Slack only updates the request's own fields.
   const merged = { ...next, brief: next.brief ?? cur.brief, owner_hint: next.owner_hint ?? cur.owner_hint, due_date: next.due_date ?? cur.due_date };
-  const changed = JSON.stringify(merged) !== JSON.stringify(cur);
+  // Owner changed in Slack: route again, unless a person decided the route, it was sent, or it is resolved.
+  let rt: { route: string; reason: string | null; owner_name: string | null; owner_team: string | null } = { route: row.route, reason: row.route_reason, owner_name: row.owner_name, owner_team: row.owner_team };
+  if (routeIsFree(row) && merged.owner_hint !== cur.owner_hint) rt = await routeFor(c, merged.owner_hint);
+  const rerouted = rt.route !== row.route || rt.owner_name !== row.owner_name;
+  if (rerouted) {
+    await c.query("update corporate_task_requests set route = $2, route_reason = $3, owner_name = $4, owner_team = $5 where id = $1", [row.id, rt.route, rt.reason, rt.owner_name, rt.owner_team]);
+  }
+  const changed = JSON.stringify(merged) !== JSON.stringify(cur) || rerouted;
   if (changed) {
     await c.query(
       `update corporate_task_requests set task_key = coalesce(task_key, $2), title = $3, brief = $4, owner_hint = $5, due_date = $6, slack_status = $7,
@@ -383,7 +458,47 @@ async function applyTask(c: pg.PoolClient, f: z.infer<typeof taskFinding>, partn
     : undefined;
   return {
     outcome: changed ? "updated" : "unchanged", target: `corporate_task_request:${row.id}`,
-    changes: changed ? [{ type: "task", partners, title: merged.title, action: "update", due_date: merged.due_date, owner: merged.owner_hint, ...(note ? { note } : {}) }] : [],
+    changes: changed ? [{ type: "task", partners, title: merged.title, action: "update", due_date: merged.due_date, owner: merged.owner_hint, route: rt.route, route_reason: rt.reason, ...(note ? { note } : {}) }] : [],
+  };
+}
+
+// ------------------------------------------------------------------ completions
+// An explicit confirmation completes the matching existing item: same action id, and every marketplace named in the
+// message belongs to the item. Clear matches are applied on Save through the same path as the manual Resolve
+// (a sent Marketing task is completed in Task Tracker by the dashboard). Several possible items → "Confirm completion"
+// in the review queue. No matching item → nothing changes. A repeat only adds evidence.
+async function applyCompletion(c: pg.PoolClient, f: z.infer<typeof completionFinding>, partners: PartnerName[], ctx: Ctx): Promise<Applied> {
+  const latest = latestSource(f.sources);
+  const completedOn = f.completed_on ?? slackDate(latest.ts);
+  const covers = (r: any) => partners.every((p) => (r.marketplace_ids ?? []).includes(p.id));
+  const keys = f.task_id ? [f.task_id] : f.candidates!;
+  const items = (await c.query("select * from corporate_task_requests where task_key = any($1) and delivery_status <> 'dismissed'", [keys])).rows.filter(covers);
+  if (!items.length) return { outcome: "skipped", reason: "no_match" };
+  const base = { partners, title: f.title, completed_on: completedOn, source: latest.permalink };
+  if (f.candidates && items.length > 1) {
+    const options = items.map((t: any) => ({ label: `Confirm completion: ${t.title}`.slice(0, 200), change: { type: "complete", task_request_id: t.id, completed_on: completedOn }, sources: [] }));
+    const question = `Which item does this confirm? ${f.title}`;
+    const prev = (await c.query("select id, status from review_items where finding_key = $1 for update", [f.key])).rows[0];
+    let id: string;
+    if (!prev) {
+      id = (await c.query(
+        `insert into review_items (finding_key, kind, title, summary, question, supplier_hint, sources, format, field, options, task_request_ids)
+         values ($1,'completion',$2,$3,$4,$5,$6,2,'completion',$7,$8) returning id`,
+        [f.key, f.title, f.summary ?? null, question, partners.map((p) => p.name).join(", "), JSON.stringify(ctx.sources), JSON.stringify(options), items.map((t: any) => t.id)])).rows[0].id;
+    } else {
+      id = prev.id;
+      await c.query("update review_items set sources = $2, options = $3, task_request_ids = $4, updated_at = now() where id = $1", [id, JSON.stringify(ctx.sources), JSON.stringify(options), items.map((t: any) => t.id)]);
+    }
+    await recordFinding(c, f, ctx, "review_item", id);
+    return { outcome: "flagged", target: `review_item:${id}`, changes: [{ type: "completion", ...base, task_title: null, action: "confirm" }] };
+  }
+  const item = items[0];
+  const r = await resolveRequest(c, item.id, { actor: ctx.actor, by: `${ctx.actor.signer} (Slack)`, source: "slack", completed_on: completedOn, permalink: latest.permalink });
+  await recordFinding(c, f, ctx, "corporate_task_request", item.id);
+  const action = r.outcome === "resolved" ? "complete" : r.outcome === "requested" ? "complete_in_tracker" : "already_done";
+  return {
+    outcome: action === "already_done" ? "unchanged" : "updated", target: `corporate_task_request:${item.id}`,
+    changes: [{ type: "completion", ...base, task_title: item.title, action, completed_on: action === "already_done" && item.completed_on ? new Date(item.completed_on).toISOString().slice(0, 10) : completedOn }],
   };
 }
 

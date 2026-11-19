@@ -45,6 +45,8 @@ beforeAll(async () => {
   process.env.CORPORATE_REPORTING_SECRET = REPORTING;
   partners = Object.fromEntries((await call("GET", "/marketplaces?include_inactive=1")).body.marketplaces.map((m: any) => [m.name, m]));
   vendor = (await call("POST", "/vendors", { ...S, name: "Example Pottery Co", website_url: "https://pottery.example.test" })).body.vendor;
+  // Fictional owner directory: one Marketing team member (tasks for her go to the dashboard).
+  expect((await call("POST", "/owners", { ...S, name: "Example Owner", team: "marketing" })).status).toBe(200);
 });
 afterAll(() => { delete process.env.CORPORATE_SLACK_INGEST_SECRET; _setSampleSignupFetchForTests(null); });
 
@@ -341,7 +343,12 @@ describe("Corporate Gifts tasks: delivery through the Marketing Dashboard", () =
   });
 
   it("a failed delivery can be retried without creating a duplicate", async () => {
-    const t = (await q("select * from corporate_task_requests where task_key = 'group-followup'"))[0];
+    const t0 = (await q("select * from corporate_task_requests where task_key = 'group-followup'"))[0];
+    // No owner named in Slack: it waits for a routing decision and is not offered to the dashboard until then.
+    expect(t0.route).toBe("review");
+    expect((await tasksReport()).body.tasks.some((x: any) => x.id === t0.id)).toBe(false);
+    expect((await call("POST", `/task-requests/${t0.id}/route`, { ...S, route: "marketing", version: t0.version })).status).toBe(200);
+    const t = (await q("select * from corporate_task_requests where id = $1", [t0.id]))[0];
     await receipt({ receipts: [{ id: t.id, content_version: 1, state: "failed", error: "Task Tracker unavailable" }] });
     let row = (await q("select * from corporate_task_requests where id = $1", [t.id]))[0];
     expect(row).toMatchObject({ delivery_status: "failed", delivery_error: "Task Tracker unavailable" });
@@ -368,7 +375,7 @@ describe("Corporate Gifts tasks: delivery through the Marketing Dashboard", () =
     expect((await call("GET", "/task-requests?status=active")).body.tasks.map((x: any) => x.id)).not.toContain(t.id);
     // The dashboard's next read (since its last one) gets the same request as resolved, and the shared capability.
     const feed = (await tasksReport(`?since=${encodeURIComponent(new Date(Date.now() - 60_000).toISOString())}`)).body;
-    expect(feed.capabilities).toEqual(["resolved"]);
+    expect(feed.capabilities).toEqual(["resolved", "routing"]);
     expect(feed.tasks.find((x: any) => x.id === t.id)).toMatchObject({ delivery_status: "resolved" });
     expect((await tasksReport()).body.tasks.find((x: any) => x.id === t.id)).toBeUndefined();          // not offered as pending
     // Repeated clicks and stale receipts never reopen it.
@@ -392,7 +399,7 @@ describe("Corporate Gifts tasks: delivery through the Marketing Dashboard", () =
     expect((await receipt({ receipts: [{ id: t.id, content_version: 1, state: "resolved" }] })).body).toMatchObject({ ignored: 1 });
   });
 
-  it("racing with task creation: a task that already exists in Task Tracker wins over a resolution, with its status and link", async () => {
+  it("racing with task creation: a task that already exists in Task Tracker wins over a resolution, with its status and link, and is completed there", async () => {
     const echo = partners["Demo Market Echo"].id;
     const t = (await call("POST", "/task-requests", { ...S, title: "Ship Echo's November samples", marketplace_ids: [echo] })).body.task;
     await call("POST", `/task-requests/${t.id}/resolve`, { ...S, version: t.version });
@@ -401,7 +408,11 @@ describe("Corporate Gifts tasks: delivery through the Marketing Dashboard", () =
     const row = (await q("select * from corporate_task_requests where id = $1", [t.id]))[0];
     expect(row).toMatchObject({ delivery_status: "delivered", tracker_task_id: "trk-race", tracker_status: "open", tracker_open_url: "https://tracker.example.test/#/tasks/trk-race", resolved_in: "corporate_gifts" });
     expect(row.resolved_at).not.toBeNull();
-    expect((await call("POST", `/task-requests/${row.id}/resolve`, { ...S, version: row.version })).status).toBe(400);   // complete it in Task Tracker
+    // The resolution becomes a request to complete that task in Task Tracker (the dashboard does it); a repeat is harmless.
+    expect(row.resolve_requested_at).not.toBeNull();
+    const feed = (await tasksReport("?v=2")).body.tasks.find((x: any) => x.id === t.id);
+    expect(feed).toMatchObject({ delivery_status: "delivered", resolution: { state: "requested" } });
+    expect((await call("POST", `/task-requests/${row.id}/resolve`, { ...S, version: row.version })).body.outcome).toBe("already_requested");
     expect((await q("select count(*)::int as n from corporate_task_requests where title = $1", ["Ship Echo's November samples"]))).toEqual([{ n: 1 }]);
   });
 
