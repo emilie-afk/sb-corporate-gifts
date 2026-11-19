@@ -45,6 +45,8 @@ beforeAll(async () => {
   process.env.CORPORATE_REPORTING_SECRET = REPORTING;
   partners = Object.fromEntries((await call("GET", "/marketplaces?include_inactive=1")).body.marketplaces.map((m: any) => [m.name, m]));
   vendor = (await call("POST", "/vendors", { ...S, name: "Example Pottery Co", website_url: "https://pottery.example.test" })).body.vendor;
+  // Fictional owner directory: one Marketing team member (tasks for her go to the dashboard).
+  expect((await call("POST", "/owners", { ...S, name: "Example Owner", team: "marketing" })).status).toBe(200);
 });
 afterAll(() => { delete process.env.CORPORATE_SLACK_INGEST_SECRET; _setSampleSignupFetchForTests(null); });
 
@@ -341,7 +343,12 @@ describe("Corporate Gifts tasks: delivery through the Marketing Dashboard", () =
   });
 
   it("a failed delivery can be retried without creating a duplicate", async () => {
-    const t = (await q("select * from corporate_task_requests where task_key = 'group-followup'"))[0];
+    const t0 = (await q("select * from corporate_task_requests where task_key = 'group-followup'"))[0];
+    // No owner named in Slack: it waits for a routing decision and is not offered to the dashboard until then.
+    expect(t0.route).toBe("review");
+    expect((await tasksReport()).body.tasks.some((x: any) => x.id === t0.id)).toBe(false);
+    expect((await call("POST", `/task-requests/${t0.id}/route`, { ...S, route: "marketing", version: t0.version })).status).toBe(200);
+    const t = (await q("select * from corporate_task_requests where id = $1", [t0.id]))[0];
     await receipt({ receipts: [{ id: t.id, content_version: 1, state: "failed", error: "Task Tracker unavailable" }] });
     let row = (await q("select * from corporate_task_requests where id = $1", [t.id]))[0];
     expect(row).toMatchObject({ delivery_status: "failed", delivery_error: "Task Tracker unavailable" });
@@ -365,14 +372,15 @@ describe("Corporate Gifts tasks: delivery through the Marketing Dashboard", () =
     const after = (await call("GET", "/task-requests?status=review")).body;
     expect(after.to_review).toBe(before - 1);
     expect(after.tasks.map((x: any) => x.id)).not.toContain(t.id);
-    expect((await call("GET", "/task-requests?status=active")).body.tasks.map((x: any) => x.id)).not.toContain(t.id);
+    expect((await call("GET", "/task-requests?status=active")).body.tasks.find((x: any) => x.id === t.id)).toMatchObject({ delivery_status: "resolved" });   // shown under Resolved
     // The dashboard's next read (since its last one) gets the same request as resolved, and the shared capability.
     const feed = (await tasksReport(`?since=${encodeURIComponent(new Date(Date.now() - 60_000).toISOString())}`)).body;
     expect(feed.capabilities).toEqual(["resolved"]);
     expect(feed.tasks.find((x: any) => x.id === t.id)).toMatchObject({ delivery_status: "resolved" });
     expect((await tasksReport()).body.tasks.find((x: any) => x.id === t.id)).toBeUndefined();          // not offered as pending
     // Repeated clicks and stale receipts never reopen it.
-    expect((await call("POST", `/task-requests/${t.id}/resolve`, { ...S, version: r.body.task.version })).status).toBe(400);
+    const repeat = await call("POST", `/task-requests/${t.id}/resolve`, { ...S, version: r.body.task.version });
+    expect(repeat.body).toMatchObject({ outcome: "already_resolved", task: { delivery_status: "resolved" } });
     expect((await call("POST", `/task-requests/${t.id}/dismiss`, { ...S, version: r.body.task.version })).status).toBe(400);
     for (const state of ["in_review", "failed", "dismissed", "resolved"])
       expect((await receipt({ receipts: [{ id: t.id, content_version: 1, state, ...(state === "failed" ? { error: "x" } : {}) }] })).body).toMatchObject({ ignored: 1 });
@@ -399,9 +407,11 @@ describe("Corporate Gifts tasks: delivery through the Marketing Dashboard", () =
     // The dashboard had already created the task (its send was in flight): it reports the task.
     await receipt({ receipts: [{ id: t.id, content_version: 1, state: "delivered", tracker: { task_id: "trk-race", status: "open", open_url: "https://tracker.example.test/#/tasks/trk-race" } }] });
     const row = (await q("select * from corporate_task_requests where id = $1", [t.id]))[0];
-    expect(row).toMatchObject({ delivery_status: "delivered", tracker_task_id: "trk-race", tracker_status: "open", tracker_open_url: "https://tracker.example.test/#/tasks/trk-race", resolved_in: "corporate_gifts" });
+    expect(row).toMatchObject({ delivery_status: "delivered", tracker_task_id: "trk-race", tracker_status: "open", tracker_open_url: "https://tracker.example.test/#/tasks/trk-race",
+      resolved_in: "corporate_gifts", resolution_state: null, completed_on: null });
     expect(row.resolved_at).not.toBeNull();
-    expect((await call("POST", `/task-requests/${row.id}/resolve`, { ...S, version: row.version })).status).toBe(400);   // complete it in Task Tracker
+    // Completion belongs to the Task Tracker task: Mark done asks the dashboard to complete it there.
+    expect((await call("POST", `/task-requests/${row.id}/resolve`, { ...S, version: row.version })).body.outcome).toBe("requested");
     expect((await q("select count(*)::int as n from corporate_task_requests where title = $1", ["Ship Echo's November samples"]))).toEqual([{ n: 1 }]);
   });
 

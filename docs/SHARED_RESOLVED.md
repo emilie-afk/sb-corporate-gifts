@@ -12,9 +12,13 @@ with the Marketing Dashboard's Corporate Gifts queue, on the same request id.
   failed. Resolved and dismissed requests are not open work in the dashboard summary or the partner counts.
 - **Nothing reopens a resolved request.** Repeated clicks, stale forms (version check), later Slack scans of the same
   task, and stale receipts (`in_review`, `failed`, `dismissed`, `resolved`) leave it resolved.
+- **Any route.** Check-off items and items waiting for routing are resolved the same way (no task). Every resolved
+  item is also a completed record (date, who, evidence) for the weekly report.
+- **Mark done** (a task already in Task Tracker) is not Resolve: the dashboard completes the task through Task
+  Tracker's own rules, and the request shows "Done in Task Tracker" once Task Tracker confirms.
 - **A task that already exists wins.** If the dashboard had already created the Task Tracker task (for example, its
   send was in flight when the request was resolved), it reports `delivered`. The request then shows the task's status
-  and link, keeps the time it was resolved as history, and is completed in Task Tracker.
+  and link, keeps the time it was resolved as history (the resolution is withdrawn), and is completed in Task Tracker.
 
 ## Contract
 
