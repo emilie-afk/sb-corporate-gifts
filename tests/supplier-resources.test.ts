@@ -344,8 +344,8 @@ describe("Corporate Gifts tasks: delivery through the Marketing Dashboard", () =
 
   it("a failed delivery can be retried without creating a duplicate", async () => {
     const t0 = (await q("select * from corporate_task_requests where task_key = 'group-followup'"))[0];
-    // No owner named in Slack: it waits for a routing decision and is not offered to the dashboard until then.
-    expect(t0.route).toBe("review");
+    // No owner named in Slack: a check-off item, not offered to the dashboard until it is assigned to Marketing.
+    expect(t0.route).toBe("checkoff");
     expect((await tasksReport()).body.tasks.some((x: any) => x.id === t0.id)).toBe(false);
     expect((await call("POST", `/task-requests/${t0.id}/route`, { ...S, route: "marketing", version: t0.version })).status).toBe(200);
     const t = (await q("select * from corporate_task_requests where id = $1", [t0.id]))[0];

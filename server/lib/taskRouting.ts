@@ -1,9 +1,11 @@
 // Routing and resolution of Corporate Gifts tasks (shared by the app, the Slack workflow and the dashboard connection).
 //
 // Routing by owner (owner directory = verified names and their team):
-//   - one owner, an active Marketing team member      → "marketing": Marketing Dashboard draft → Task Tracker task;
-//   - one owner, outside Marketing or an external partner → "checkoff": a check-off item shown in both apps;
-//   - no owner, several owners, an unknown name, or a name matching several entries → "review" (a person decides).
+//   - one owner, an active Marketing team member → "marketing": Marketing Dashboard draft → Task Tracker task;
+//   - everything else (an owner outside Marketing, a partner, a name not in the directory, several owners, no owner)
+//     → "checkoff": a check-off item with the names from Slack, shown in both apps. Check-off items are ticked off
+//     (one or in bulk), or assigned to Marketing in bulk ("Assign to <Marketing owner>") to follow up.
+// "review" (a person decides) is no longer chosen automatically; existing items in it can still be decided.
 // A route chosen by a reviewer is kept; a task already sent to Task Tracker always stays a Marketing task.
 //
 // Resolution (one record, both apps; builds on the shared "resolved" status of migration 008):
@@ -48,13 +50,13 @@ export function ownerNames(hint: string | null | undefined): string[] {
 
 export async function routeFor(c: pg.PoolClient, hint: string | null | undefined): Promise<RouteResult> {
   const names = ownerNames(hint);
-  if (names.length === 0) return { route: "review", reason: "No owner named", owner_name: null, owner_team: null };
-  if (names.length > 1) return { route: "review", reason: `Several owners named (${names.join(", ")})`, owner_name: null, owner_team: null };
+  if (names.length === 0) return { route: "checkoff", reason: "No owner named", owner_name: null, owner_team: null };
+  if (names.length > 1) return { route: "checkoff", reason: `Several owners named (${names.join(", ")})`, owner_name: null, owner_team: null };
   const key = nameKey(names[0]);
   const owners = (await c.query("select id, name, aliases, team from corporate_owners where active")).rows;
   const hits = owners.filter((o: any) => [o.name, ...(o.aliases ?? [])].some((n: string) => nameKey(n) === key));
-  if (hits.length === 0) return { route: "review", reason: `Owner not in the owner directory (${names[0]})`, owner_name: null, owner_team: null };
-  if (hits.length > 1) return { route: "review", reason: `Owner name matches several people (${names[0]})`, owner_name: null, owner_team: null };
+  if (hits.length === 0) return { route: "checkoff", reason: "Not on the Marketing team", owner_name: null, owner_team: null };
+  if (hits.length > 1) return { route: "checkoff", reason: `Owner name matches several people (${names[0]})`, owner_name: null, owner_team: null };
   const o = hits[0];
   return o.team === "marketing"
     ? { route: "marketing", reason: "Marketing team member", owner_name: o.name, owner_team: o.team }

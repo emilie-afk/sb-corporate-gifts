@@ -548,6 +548,29 @@ export function supplierRoutes(r: Router) {
     return { results };
   });
 
+  // Follow-up: assign check-off items to Marketing (one or many). Each becomes a Marketing task in the dashboard, where
+  // it gets the default assignee (the Marketing owner) and is sent to Task Tracker. Each item on its own.
+  r.post("/task-requests/assign-marketing", async ({ body, actor }) => {
+    const b = await body();
+    const a = actor(b);
+    const d = parse(z.object({ ids: z.array(z.string().uuid()).min(1).max(100) }), b);
+    const results: { id: string; outcome: string; message?: string }[] = [];
+    for (const id of [...new Set(d.ids)]) {
+      try {
+        const out = await tx(async (c) => {
+          const row = await one("select route, delivery_status, tracker_status, resolve_requested_at, slack_status from corporate_task_requests where id = $1", [id], c);
+          if (!row) return { outcome: "failed", message: "Not found." };
+          if (row.route === "marketing") return { outcome: "already" };
+          if (resolutionOf(row) || ["dismissed", "resolved"].includes(row.delivery_status) || row.slack_status === "cancelled") return { outcome: "failed", message: "Already closed." };
+          await decideRoute(c, id, "marketing", { actor: a, by: a.signer });
+          return { outcome: "assigned" };
+        });
+        results.push({ id, ...out });
+      } catch (e: any) { results.push({ id, outcome: "failed", message: e?.message ?? "Could not be assigned." }); }
+    }
+    return { results };
+  });
+
   // Routing decision for an item in review: "Assign as Marketing task" or "Track as check-off".
   r.post("/task-requests/:id/route", async ({ params, body, actor }) => {
     const b = await body();
