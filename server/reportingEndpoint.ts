@@ -16,7 +16,9 @@
 //       owner hint, due date, partner names with their Corporate Gifts links. Never Slack links or terms.
 //   POST /api/reporting/v1/corporate-task-receipts
 //       The only write on this connection: the dashboard reports what happened to each request (in review,
-//       delivered with the Task Tracker task id, failed, dismissed). Nothing else can be changed through it.
+//       delivered with the Task Tracker task id, failed, dismissed, resolved). Nothing else can be changed through it.
+//       "resolved" (handled without a task) is shared with the dashboard: the feed lists requests resolved here and
+//       advertises capabilities: ["resolved"], so the dashboard sends "resolved" only once this build accepts it.
 //
 // Returned: stable record ids, a content revision, the reporting month and timezone, the scope, completeness with
 // reason codes, and amounts in cents. Never returned: orders, order lines, customer or billing names, contact
@@ -156,9 +158,9 @@ export async function workflowReport(now = new Date()) {
   // actions. Overdue = open with an explicit due date (Task Tracker's, once delivered) before today (Los Angeles).
   const fu = await one(
     `select (select count(*) from corporate_actions where kind = 'action' and status = 'open' and excluded_at is null)
-            + (select count(*) from corporate_task_requests where slack_status = 'open' and delivery_status <> 'dismissed' and coalesce(tracker_status, 'open') = 'open') as open,
+            + (select count(*) from corporate_task_requests where slack_status = 'open' and delivery_status not in ('dismissed', 'resolved') and coalesce(tracker_status, 'open') = 'open') as open,
             (select count(*) from corporate_actions where kind = 'action' and status = 'open' and excluded_at is null and due_date < $1::date)
-            + (select count(*) from corporate_task_requests where slack_status = 'open' and delivery_status <> 'dismissed' and coalesce(tracker_status, 'open') = 'open'
+            + (select count(*) from corporate_task_requests where slack_status = 'open' and delivery_status not in ('dismissed', 'resolved') and coalesce(tracker_status, 'open') = 'open'
                  and coalesce(tracker_due_date, due_date) < $1::date) as overdue`, [today]);
   const recent = await query(
     `select * from (
@@ -201,7 +203,7 @@ export async function corporateTasksReport(params: URLSearchParams) {
      order by t.updated_at limit 200`, [since]);
   const as_of = (await one("select now() as at"))!.at;
   return {
-    ok: true, schema_version: 1, source: "sb-corporate-gifts", id: "cg:corporate-tasks", as_of,
+    ok: true, schema_version: 1, source: "sb-corporate-gifts", id: "cg:corporate-tasks", as_of, capabilities: ["resolved"],
     tasks: rows.map((r: any) => ({
       id: r.id, title: r.title, brief: r.brief, owner_hint: r.owner_hint,
       due_date: r.due_date ? new Date(r.due_date).toISOString().slice(0, 10) : null,
@@ -216,7 +218,7 @@ const receiptSchema = z.object({
   receipts: z.array(z.object({
     id: z.string().uuid(),
     content_version: z.number().int().min(1),
-    state: z.enum(["in_review", "delivered", "failed", "dismissed"]),
+    state: z.enum(["in_review", "delivered", "failed", "dismissed", "resolved"]),
     tracker: z.object({
       task_id: z.string().min(1).max(80),
       status: z.enum(["open", "done", "deleted"]),
@@ -255,8 +257,17 @@ export async function applyTaskReceipts(input: unknown) {
         out.applied++;
         continue;
       }
-      // Not delivered (yet): never overrides a delivered request; a dismissal here is final.
-      if (row.delivery_status === "delivered" || row.delivery_status === "dismissed") { out.ignored++; continue; }
+      // Not delivered (yet): never overrides a delivered request; a dismissal or a resolution is final (a repeated or
+      // stale receipt never reopens it).
+      if (["delivered", "dismissed", "resolved"].includes(row.delivery_status)) { out.ignored++; continue; }
+      if (x.state === "resolved") {
+        // Resolved in the dashboard: same request, no task. Bumps the version so a form opened before it can't act on it.
+        await c.query(`update corporate_task_requests set delivery_status = 'resolved', delivery_error = null, resolved_at = now(), resolved_by = $2, resolved_in = 'dashboard',
+                         receipt_at = now(), updated_at = now(), version = version + 1 where id = $1`, [x.id, DASHBOARD.signer]);
+        await audit(c, DASHBOARD, { entityType: "corporate_task_request", entityId: x.id, action: "resolve", before: { delivery_status: row.delivery_status }, after: { delivery_status: "resolved", resolved_in: "dashboard" } });
+        out.applied++;
+        continue;
+      }
       if (x.state === "in_review" && row.delivery_status !== "pending") { out.ignored++; continue; }
       await c.query(`update corporate_task_requests set delivery_status = $2, delivery_error = $3, receipt_at = now(), updated_at = now() where id = $1`,
         [x.id, x.state, x.state === "failed" ? (x.error ?? "Delivery failed.") : null]);

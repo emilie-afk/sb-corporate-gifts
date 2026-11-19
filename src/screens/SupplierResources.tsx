@@ -39,7 +39,7 @@ export const APPLICATION_LABEL: Record<string, string> = {
 const FIELD_LABEL: Record<string, string> = { relationship_status: "Relationship status", application_status: "Application status", application_date: "Application date" };
 const DELIVERY_LABEL: Record<string, [string, string]> = {
   pending: ["Waiting for the dashboard", "warn"], in_review: ["In review (Marketing Dashboard)", "info"], delivered: ["In Task Tracker", "ok"],
-  failed: ["Delivery failed", "danger"], dismissed: ["Dismissed", "neutral"],
+  failed: ["Delivery failed", "danger"], dismissed: ["Dismissed", "neutral"], resolved: ["Resolved", "neutral"],
 };
 const fmtValue = (field: string, v: string | null) => v == null ? "not set" : field === "relationship_status" ? (STATUS_LABEL[v] ?? v) : field === "application_status" ? (APPLICATION_LABEL[v] ?? v) : v;
 
@@ -161,7 +161,7 @@ function SupplierDetail({ supplier, nav, onChanged }: { supplier: string; nav: N
   );
 }
 
-function TaskList({ tasks, onRetry, onDismiss }: { tasks: any[]; onRetry?: (t: any) => void; onDismiss?: (t: any) => void }) {
+function TaskList({ tasks, onRetry, onDismiss, onResolve }: { tasks: any[]; onRetry?: (t: any) => void; onDismiss?: (t: any) => void; onResolve?: (t: any) => void }) {
   return (
     <ul className="timeline">
       {tasks.map((t) => {
@@ -177,6 +177,7 @@ function TaskList({ tasks, onRetry, onDismiss }: { tasks: any[]; onRetry?: (t: a
               <span className="spacer" />
               {t.tracker_open_url && <ExtLink href={t.tracker_open_url}>Open in Task Tracker</ExtLink>}
               {onRetry && t.delivery_status === "failed" && <button className="btn small" onClick={() => onRetry(t)}>Retry delivery</button>}
+              {onResolve && ["pending", "in_review", "failed"].includes(t.delivery_status) && <button className="btn small" onClick={() => onResolve(t)} title="Handled without creating a task">Resolve</button>}
               {onDismiss && ["pending", "in_review", "failed"].includes(t.delivery_status) && <button className="btn ghost small" onClick={() => onDismiss(t)}>Dismiss</button>}
             </div>
             {t.brief && <div className="pre">{t.brief}</div>}
@@ -185,6 +186,8 @@ function TaskList({ tasks, onRetry, onDismiss }: { tasks: any[]; onRetry?: (t: a
               {(t.tracker_assignee || t.owner_hint) && <> · Owner: {t.tracker_assignee ?? `${t.owner_hint} (from Slack)`}</>}
               {(t.tracker_due_date || t.due_date) && <> · Due {t.tracker_due_date ?? t.due_date}</>}
               {t.delivery_error && <> · {t.delivery_error}</>}
+              {t.delivery_status === "resolved" && <> · Resolved {t.resolved_in === "dashboard" ? "in the Marketing Dashboard" : `by ${t.resolved_by}`}</>}
+              {t.delivery_status === "delivered" && t.resolved_at && <> · Resolved {t.resolved_in === "dashboard" ? "in the Marketing Dashboard" : "here"}, but the task already existed in Task Tracker: complete it there</>}
               {(t.source_refs ?? []).map((x: any, n: number) => <span key={n}> · <ExtLink href={x.permalink}>{CHANNEL_LABEL[x.channel] ?? x.channel} {x.date ?? ""}</ExtLink></span>)}
               {" · "}{t.origin === "slack" ? "From Slack" : `Added by ${t.created_by}`}
             </div>
@@ -357,23 +360,23 @@ function DecisionForm({ item, option, onClose, onSaved }: { item: any; option: n
 
 // --------------------------------------------------------------------- tasks
 function FollowUps() {
-  const [status, setStatus] = usePref("res.tasks", "active");
+  const [status, setStatus] = usePref("res.tasks", "review");
   const t = useLoad(() => get(`/task-requests?status=${status}`), [status]);
   const d = useLoad(() => get(`/actions?status=open`), []);
   const [edit, setEdit] = useState<any | null>(null);
   const [addTask, setAddTask] = useState(false);
-  const [act, setAct] = useState<{ t: any; kind: "retry" | "dismiss" } | null>(null);
+  const [act, setAct] = useState<{ t: any; kind: "retry" | "dismiss" | "resolve" } | null>(null);
   return (
     <>
       <p className="hint">Corporate Gifts tasks go to the Marketing Dashboard, where they are reviewed and assigned, then appear in Marketing Tasks (Task Tracker). Task Tracker keeps the owner and completion.</p>
       <div className="filters">
-        <Select value={status} onChange={setStatus} options={{ active: "Not dismissed", all: "All" }} aria-label="Tasks shown" />
+        <Select value={status} onChange={setStatus} options={{ review: `To review${t.data ? ` (${t.data.to_review})` : ""}`, active: "Not dismissed or resolved", all: "All" }} aria-label="Tasks shown" />
         <button className="btn small" onClick={() => setAddTask(true)}>Add task</button>
       </div>
       {t.loading && !t.data && <Loading />}
       <ErrorBox error={t.error} />
       {t.data && t.data.tasks.length === 0 && <Empty>No Corporate Gifts tasks.</Empty>}
-      {t.data && <TaskList tasks={t.data.tasks} onRetry={(x) => setAct({ t: x, kind: "retry" })} onDismiss={(x) => setAct({ t: x, kind: "dismiss" })} />}
+      {t.data && <TaskList tasks={t.data.tasks} onRetry={(x) => setAct({ t: x, kind: "retry" })} onDismiss={(x) => setAct({ t: x, kind: "dismiss" })} onResolve={(x) => setAct({ t: x, kind: "resolve" })} />}
       <h3>Other follow-ups (entered by hand)</h3>
       <div className="filters"><button className="btn small" onClick={() => setEdit({})}>Add action, blocker or decision</button></div>
       {d.data && d.data.actions.length === 0 && <Empty>Nothing open.</Empty>}
@@ -398,7 +401,7 @@ function FollowUps() {
   );
 }
 
-function TaskActionForm({ t, kind, onClose, onSaved }: { t: any; kind: "retry" | "dismiss"; onClose: () => void; onSaved: () => void }) {
+function TaskActionForm({ t, kind, onClose, onSaved }: { t: any; kind: "retry" | "dismiss" | "resolve"; onClose: () => void; onSaved: () => void }) {
   const [signer, setSigner] = useSigner();
   const s = useSave();
   const submit = async (e: FormEvent) => {
@@ -407,14 +410,15 @@ function TaskActionForm({ t, kind, onClose, onSaved }: { t: any; kind: "retry" |
     if (ok) { rememberSigner(signer); onSaved(); }
   };
   return (
-    <Overlay kind="modal" title={kind === "retry" ? "Retry delivery" : "Dismiss task"} onClose={onClose}>
+    <Overlay kind="modal" title={kind === "retry" ? "Retry delivery" : kind === "resolve" ? "Resolve task" : "Dismiss task"} onClose={onClose}>
       <form onSubmit={submit} className="form-grid">
         <ErrorBox error={s.error} />
         <p className="hint wide">{kind === "retry"
           ? `"${t.title}" goes back to the Marketing Dashboard. It is sent with the same id, so Task Tracker can never get a second copy.`
+          : kind === "resolve" ? `"${t.title}" was handled without a task. It leaves To review here and in the Marketing Dashboard (after its next read), and no task is created. If the dashboard had already created the task, that task stays and is shown here with its link.`
           : `"${t.title}" will not be sent to Task Tracker. Its history is kept.`}</p>
         <SignerField value={signer} onChange={setSigner} error={s.fe("signer_name")} />
-        <FormActions saving={s.saving} onCancel={onClose} label={kind === "retry" ? "Retry delivery" : "Dismiss"} />
+        <FormActions saving={s.saving} onCancel={onClose} label={kind === "retry" ? "Retry delivery" : kind === "resolve" ? "Resolve" : "Dismiss"} />
       </form>
     </Overlay>
   );
