@@ -12,7 +12,7 @@ const REPORTING = "test-reporting-secret-test-reporting-secret-02";
 const q = async (sql: string, p: unknown[] = []) => (await getPool().query(sql, p)).rows;
 let tsN = 1791000000;
 const ts = () => `${++tsN}.000200`;
-const src = (channel: "seo" | "teammarketing", t: string) => ({ channel, ts: t, permalink: `https://example-workspace.slack.com/archives/CEX${channel === "seo" ? "1" : "2"}/p${t.replace(".", "")}` });
+const src = (channel: "seo" | "teammarketing", t: string) => ({ channel, ts: t, permalink: `https://example-workspace.slack.com/archives/CEXAMPLE${channel === "seo" ? "1" : "2"}/p${t.replace(".", "")}` });
 const pass = (channel: "seo" | "teammarketing", findings: any[]) => ({
   schema: "sbcg-slack-v2", channel, through_ts: findings.flatMap((f) => f.sources.map((s: any) => s.ts)).sort().at(-1),
   messages: [...new Set(findings.flatMap((f) => f.sources.filter((s: any) => s.channel === channel).map((s: any) => s.ts)))].map((t) => ({ ts: t })), findings,
@@ -128,15 +128,23 @@ describe("resource links from Slack", () => {
 });
 
 describe("routing and resolution", () => {
-  const taskF = (id: string, owner: string | undefined, partner = "Demo Market Delta") => ({ ...sel, key: id, type: "task", task_id: id, partners: [{ names: [partner] }], title: `Fictional action ${id}`, ...(owner ? { owner } : {}), sources: [src("seo", ts())] });
+  const taskF = (id: string, owner: string | undefined, partner = "Demo Market Delta", source: any = src("seo", ts())) => ({ ...sel, key: id, type: "task", task_id: id, partners: [{ names: [partner] }], title: `Fictional action ${id}`, ...(owner ? { owner } : {}), sources: [source] });
 
   it("routes by owner: Marketing task, or a check-off item with the names from Slack", async () => {
     const r = await imp(pass("seo", [taskF("t-marketing", "Example Marketer"), taskF("t-ops", "Ops Lead (ops team)"), taskF("t-partner", "Example Partner Rep"), taskF("t-two", "Example Marketer / Example Ops Lead"), taskF("t-none", undefined), taskF("t-unknown", "Someone Else")]));
     expect(r.status).toBe(200);
     const routes = Object.fromEntries(r.body.changes.filter((c: any) => c.type === "task").map((c: any) => [c.title.replace("Fictional action ", ""), c.route]));
     expect(routes).toEqual({ "t-marketing": "marketing", "t-ops": "checkoff", "t-partner": "checkoff", "t-two": "checkoff", "t-none": "checkoff", "t-unknown": "checkoff" });
-    const offered = (await rep("corporate-tasks?v=2")).body.tasks.map((t: any) => t.title);
+    const feed = (await rep("corporate-tasks?v=2")).body.tasks;
+    const offered = feed.map((t: any) => t.title);
     expect(offered).toContain("Fictional action t-marketing");
+    // Identity of the Slack message only (to keep one task per Slack request across workflows): no links or text.
+    const mk = feed.find((t: any) => t.title === "Fictional action t-marketing");
+    expect(mk.slack_sources).toHaveLength(1);
+    expect(mk.slack_sources[0]).toEqual({ channel_id: expect.stringMatching(/^[A-Z0-9]{6,20}$/), message_ts: expect.stringMatching(/^\d{9,11}\.\d{6}$/) });
+    expect(JSON.stringify(feed)).not.toContain("slack.com");
+    expect((await rep("corporate-tasks")).body.tasks.every((t: any) => !("slack_sources" in t))).toBe(true);
+    expect(mk.slack_sources[0].request_id).toBeUndefined();                  // no number reported: identity of the message only
     expect(offered).not.toContain("Fictional action t-ops");
     const checks = (await rep("corporate-checkoffs")).body;
     expect(checks.items.find((x: any) => x.title === "Fictional action t-ops")).toMatchObject({ route: "checkoff", owner: "Example Ops Lead", state: "open" });
@@ -343,3 +351,22 @@ describe("follow up: assign check-off items to Marketing", () => {
     expect(checks.every((x: any) => x.listed === false)).toBe(true);
   });
 });
+
+describe("request numbers within a Slack message", () => {
+  const taskN = (id: string, msgTs: string, rid?: string) => ({ ...sel, key: id, type: "task", task_id: id, partners: [{ names: ["Demo Market Delta"] }], title: `Numbered ${id}`, owner: "Example Marketer",
+    sources: [{ ...src("seo", msgTs), ...(rid ? { request_id: rid } : {}) }] });
+  it("feeds each request's number within its message, keeps it on later passes, and rejects a malformed number", async () => {
+    const t = ts();
+    const r = await imp(pass("seo", [taskN("n-blog", t, "a1"), taskN("n-letter", t, "a2")]));
+    expect(r.status).toBe(200);
+    const feed = (await rep("corporate-tasks?v=2")).body.tasks;
+    expect(feed.find((x: any) => x.title === "Numbered n-blog").slack_sources[0]).toMatchObject({ request_id: "a1" });
+    expect(feed.find((x: any) => x.title === "Numbered n-letter").slack_sources[0]).toMatchObject({ request_id: "a2" });
+    // A rescan that leaves the number out keeps it.
+    await imp(pass("seo", [{ ...taskN("n-letter", t), title: "Numbered n-letter (edited)" }]));
+    const again = (await rep("corporate-tasks?v=2&since=2000-01-01T00:00:00Z")).body.tasks.find((x: any) => x.title === "Numbered n-letter (edited)");
+    expect(again.slack_sources[0]).toMatchObject({ request_id: "a2" });
+    expect((await imp(pass("seo", [taskN("n-bad", ts(), "first")]))).status).toBe(400);
+  });
+});
+

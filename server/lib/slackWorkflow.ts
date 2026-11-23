@@ -46,6 +46,10 @@ const KEY = z.string().regex(/^[a-z0-9][a-z0-9:._-]{2,119}$/, "lowercase key");
 const source = z.object({
   channel: z.enum(CHANNELS),
   ts: TS,
+  // Which request of that message this is: every independent request in the message counted in order of appearance
+  // (a1, a2, …), the numbering Task Tracker's Slack intake and the dashboard's Slack review also use. Lets the three
+  // apps keep one task per Slack request when a message holds several requests.
+  request_id: z.string().regex(/^a[0-9]{1,2}$/, "a1, a2, … (the request's number within the message)").optional(),
   thread_ts: TS.nullable().optional(),
   permalink: slackLink,
   date: YMD.optional(),
@@ -141,7 +145,8 @@ const latestSource = (s: { date?: string; permalink: string; ts: string }[]) => 
 const sourceDate = (s: { date?: string; ts: string }) => s.date ?? new Date(tsNum(s.ts) * 1000).toISOString().slice(0, 10);
 const mergeSources = (a: any[], b: any[]) => {
   const m = new Map<string, any>();
-  for (const s of [...a, ...b]) m.set(`${s.channel}:${s.ts}`, s);
+  // A later pass keeps a request number reported earlier for the same message when it does not repeat it.
+  for (const s of [...a, ...b]) { const k = `${s.channel}:${s.ts}`; const prev = m.get(k); m.set(k, { ...s, ...(s.request_id ?? prev?.request_id ? { request_id: s.request_id ?? prev?.request_id } : {}) }); }
   return [...m.values()].sort((x, y) => tsNum(x.ts) - tsNum(y.ts));
 };
 /** Content of a finding without its sources: the same event reported from two messages has the same content. */

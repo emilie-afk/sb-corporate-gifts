@@ -13,7 +13,9 @@
 //       decisions and blockers as one-line summaries. No supplier files, quotes, terms, contacts or Slack messages.
 //   GET /api/reporting/v1/corporate-tasks[?since=<ISO time>]
 //       Corporate Gifts task requests the dashboard must deliver to Task Tracker (or update there): title, brief,
-//       owner hint, due date, partner names with their Corporate Gifts links. Never Slack links or terms.
+//       owner hint, due date, partner names with their Corporate Gifts links; with v=2 also slack_sources (channel id,
+//       message ts and the request's number in the message when known, to keep one task per Slack request across
+//       workflows). Never Slack links, text or terms.
 //   GET /api/reporting/v1/corporate-checkoffs[?after=<cursor time>&after_id=<id>&limit=1..200]
 //       Every task request changed after the cursor (paged by updated_at and id), with its route and whether it
 //       belongs on the check-off list, for the dashboard's Corporate Gifts view and weekly report: action,
@@ -210,7 +212,7 @@ export async function corporateTasksReport(params: URLSearchParams) {
   const rows = await query(
     `select t.id, t.title, t.brief, t.owner_hint, t.due_date, t.slack_status, t.content_version, t.delivery_status, t.delivered_version,
             t.tracker_task_id, t.updated_at, t.route, ${RESOLUTION_SQL()} as resolution_state, to_char(t.completed_on, 'YYYY-MM-DD') as completed_on, t.completion_source,
-            t.resolved_by, t.resolved_in, t.resolve_requested_by,
+            t.resolved_by, t.resolved_in, t.resolve_requested_by, t.source_refs,
             (select json_agg(json_build_object('id', m.id, 'name', m.name) order by m.name) from marketplaces m where m.id = any(t.marketplace_ids)) as partners
      from corporate_task_requests t
      where ($2 or t.route = 'marketing' or t.delivery_status in ('resolved', 'dismissed')) and (
@@ -229,8 +231,25 @@ export async function corporateTasksReport(params: URLSearchParams) {
       delivered_version: r.delivered_version, tracker_task_id: r.tracker_task_id, updated_at: r.updated_at,
       route: r.route, resolution: r.resolution_state ? { state: r.resolution_state, completed_on: r.completed_on, source: r.completion_source, by: r.resolved_by ?? r.resolve_requested_by, in: r.resolved_in } : null,
       partners: (r.partners ?? []).map((p: any) => ({ name: p.name, url: `${appUrl()}/?tab=marketplaces&m=${p.id}` })),
+      ...(v2 ? { slack_sources: slackSourceIds(r.source_refs) } : {}),
     })),
   };
+}
+
+/**
+ * The Slack messages a request came from, as identity only (channel id and message ts; no text, links or names), so
+ * the dashboard and Task Tracker can recognize the same Slack request found by another workflow and keep one task.
+ */
+export function slackSourceIds(refs: unknown): { channel_id: string; message_ts: string; request_id?: string }[] {
+  const out: { channel_id: string; message_ts: string; request_id?: string }[] = [];
+  for (const r of Array.isArray(refs) ? refs : []) {
+    const ch = /\/archives\/([A-Z0-9]{6,20})\//.exec(String((r as any)?.permalink ?? ""))?.[1];
+    const ts = String((r as any)?.ts ?? "");
+    const rid = String((r as any)?.request_id ?? "");
+    if (ch && /^\d{9,11}\.\d{6}$/.test(ts) && !out.some((x) => x.channel_id === ch && x.message_ts === ts))
+      out.push({ channel_id: ch, message_ts: ts, ...(/^a[0-9]{1,2}$/.test(rid) ? { request_id: rid } : {}) });
+  }
+  return out.slice(0, 10);
 }
 
 /**

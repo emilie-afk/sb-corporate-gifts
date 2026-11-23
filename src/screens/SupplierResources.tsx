@@ -952,7 +952,7 @@ function SlackImport({ onSaved }: { onSaved: () => void }) {
   return (
     <Section title="Import a scan">
       <div className="form-grid">
-        <Field label="Scan file (one channel)" error={fileError} hint="JSON in the sbcg-slack-v2 format (with resource links, Link needed, general materials and completions). Preview first; nothing is saved until you press Save.">
+        <Field label="Scan file (one channel)" error={fileError} hint="JSON in the sbcg-slack-v2 format (with resource links, Link needed, general materials, completions and request numbers). Preview first; nothing is saved until you press Save.">
           <input type="file" accept=".json,application/json" onChange={(e) => pick(e.target.files?.[0])} />
         </Field>
         <SignerField value={signer} onChange={setSigner} error={s.fe("signer_name")} />
