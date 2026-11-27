@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { post, ApiError } from "../api";
 import { Field, Select, SignerField, ErrorBox, Overlay, Pill, useSigner, rememberSigner } from "../components/ui";
-import { STATUS_LABEL, STATUSES, INACTIVE, PROVIDER_LABEL } from "../format";
+import { STATUS_LABEL, STATUSES, INACTIVE, PROVIDER_LABEL, stageText } from "../format";
 
 /** Working statuses only: an inactive status needs a reason and is set later from the record. */
 const WORKING = STATUSES.filter((s) => !INACTIVE.includes(s));
@@ -50,12 +50,12 @@ export function BulkAddMarketplaces({ onClose, onSaved }: { onClose: () => void;
   const bad = rows.filter((r) => r.errors.length).length;
 
   return (
-    <Overlay kind="modal" wide title="Add marketplaces in bulk" subtitle={step === 1 ? "Step 1 of 2 · List the names" : "Step 2 of 2 · Tick each one's status"} onClose={onClose}>
+    <Overlay kind="modal" wide title="Add partners in bulk" subtitle={step === 1 ? "Step 1 of 2 · List the names" : "Step 2 of 2 · Tick each one's stage"} onClose={onClose}>
       <ErrorBox error={error} />
       {step === 1 && (
         <div className="form-grid">
           <Field label="Names" required wide hint="One per line. You can paste a column from a spreadsheet; bullets and numbering are removed.">
-            <textarea rows={10} value={text} onChange={(e) => setText(e.target.value)} placeholder={"Giftsenda\nSendoso\nBlueboard"} autoFocus />
+            <textarea rows={10} value={text} onChange={(e) => setText(e.target.value)} placeholder={"Example Partner One\nExample Partner Two\nExample Partner Three"} autoFocus />
           </Field>
           <Field label="Provider type for all" hint="Can be changed per name in the next step.">
             <Select value={ptype} onChange={setPtype} options={PROVIDER_LABEL} />
@@ -117,7 +117,7 @@ export function BulkAddMarketplaces({ onClose, onSaved }: { onClose: () => void;
             <SignerField value={signer} onChange={setSigner} />
             <div className="form-actions">
               <button className="btn ghost" disabled={busy} onClick={() => setStep(1)}>Back</button>
-              <button className="btn primary" disabled={busy || !rows.length || bad > 0 || !signer.trim()} onClick={save}>{busy ? "Saving…" : `Add ${rows.length} marketplace${rows.length === 1 ? "" : "s"}`}</button>
+              <button className="btn primary" disabled={busy || !rows.length || bad > 0 || !signer.trim()} onClick={save}>{busy ? "Saving…" : `Add ${rows.length} partner${rows.length === 1 ? "" : "s"}`}</button>
             </div>
           </div>
         </>
