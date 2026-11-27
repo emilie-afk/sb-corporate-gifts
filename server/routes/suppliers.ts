@@ -7,7 +7,7 @@ import { Router, updateVersioned } from "../router";
 import { query, one, tx, getPool } from "../db";
 import { audit, diff, type Actor } from "../audit";
 import { badRequest, notFound, conflict, HttpError } from "../http";
-import { INACTIVE_REASONS } from "./marketplaces";
+import { INACTIVE_REASONS, INACTIVE_STATUSES } from "./marketplaces";
 import { setRelationshipStatus, setApplication } from "../lib/slackWorkflow";
 import { routeFor, routeIsFree, resolveRequest, decideRoute, reportDate, resolutionOf, RESOLUTION_SQL } from "../lib/taskRouting";
 import { parse, text, reqText, displayName, url, date, version, assertUuid, defined } from "../validate";
@@ -458,6 +458,8 @@ export function supplierRoutes(r: Router) {
       const ids = [...new Set(d.marketplace_ids)];
       const ok = (await c.query("select id from marketplaces where id = any($1) and sales_role = 'confirmed'", [ids])).rows.length;
       if (ok !== ids.length) throw badRequest("Choose marketplaces that sell our corporate gifts.", { fields: { marketplace_ids: "Not eligible" } });
+      const closed = (await c.query("select name from marketplaces where id = any($1) and status = any($2) order by name", [ids, INACTIVE_STATUSES])).rows.map((x) => x.name);
+      if (closed.length) throw badRequest(`No new tasks for skipped or closed partners: ${closed.join(", ")}. Change the stage first if outreach should resume.`, { fields: { marketplace_ids: "Closed partner" } });
       const key = `manual-${(await c.query("select gen_random_uuid() as k")).rows[0].k}`;
       const rt = d.route ? { route: d.route, reason: d.route === "marketing" ? "Added as a Marketing task" : "Added as a check-off item", owner_name: null, owner_team: null } : await routeFor(c, d.owner_hint);
       const row = (await c.query(
