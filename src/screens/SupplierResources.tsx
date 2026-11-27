@@ -18,7 +18,7 @@ const SECTION_HELP: Record<string, string> = {
   catalogs_pricing: "Catalogs, availability lists, quotes and price sheets, with effective dates.",
   gift_terms: "Sample options, minimum quantities, customization, lead times, shipping methods and order cutoffs.",
   assets_documents: "One-sheets, onboarding forms, listings spreadsheets and instructions, sales assets, shared folders, photos, logos and other documents.",
-  decisions_followups: "Confirmed decisions about this marketplace, linked to open actions or requirements.",
+  decisions_followups: "Confirmed decisions about this partner, linked to open actions or requirements.",
 };
 export const TYPE_LABEL: Record<string, [string, string]> = {
   catalog: ["Catalog", "catalogs_pricing"], availability_list: ["Availability list", "catalogs_pricing"], quote: ["Quote", "catalogs_pricing"], price_sheet: ["Price sheet", "catalogs_pricing"],
@@ -54,7 +54,7 @@ const fmtValue = (field: string, v: string | null) => v == null ? "not set" : fi
 
 // View keys are kept from Supplier Resources so existing links (?tab=resources&view=suppliers…) still work.
 type View = "suppliers" | "library" | "review" | "followups" | "samples" | "scans";
-const VIEWS: [View, string][] = [["suppliers", "By marketplace"], ["library", "General materials"], ["review", "Review queue"], ["followups", "Corporate Gifts tasks"], ["samples", "Sample boxes"], ["scans", "Slack scans"]];
+const VIEWS: [View, string][] = [["suppliers", "By partner"], ["library", "General materials"], ["review", "Review queue"], ["followups", "Corporate Gifts tasks"], ["samples", "Sample boxes"], ["scans", "Slack scans"]];
 
 const ExtLink = ({ href, children }: { href: string | null; children: React.ReactNode }) =>
   href ? <a href={href} target="_blank" rel="noreferrer noopener">{children}</a> : null;
@@ -65,9 +65,9 @@ export function SupplierResourcesScreen({ params, nav }: { params: Record<string
   return (
     <div className="screen">
       <div className="toolbar">
-        <h1>Marketplace Resources</h1>
+        <h1>Partner Resources</h1>
         <div className="spacer" />
-        <div className="segmented" role="tablist" aria-label="Marketplace Resources views">
+        <div className="segmented" role="tablist" aria-label="Partner Resources views">
           {VIEWS.map(([v, label]) => (
             <button key={v} role="tab" aria-selected={view === v} className={`btn small ${view === v ? "primary" : "ghost"}`} onClick={() => go(v)}>{label}</button>
           ))}
@@ -104,10 +104,10 @@ function BySupplier({ selected, onSelect, nav }: { selected: string; onSelect: (
             </li>
           ))}
         </ul>
-        <p className="hint">Product suppliers are not listed here. To add a marketplace, use Marketplaces.</p>
+        <p className="hint">Product vendors are not listed here. To add a partner, use Partners.</p>
       </aside>
       <div className="split-detail">
-        {selected ? <SupplierDetail supplier={selected} nav={nav} onChanged={list.reload} /> : <Empty>Choose a marketplace to see its resources.</Empty>}
+        {selected ? <SupplierDetail supplier={selected} nav={nav} onChanged={list.reload} /> : <Empty>Choose a partner to see its resources.</Empty>}
       </div>
     </div>
   );
@@ -121,7 +121,7 @@ function SupplierDetail({ supplier, nav, onChanged }: { supplier: string; nav: N
   if (d.loading && !d.data) return <Loading />;
   if (d.error) return <ErrorBox error={d.error} />;
   const s = d.data.supplier;
-  if (s.kind !== "partner") return <Empty>Product suppliers are not part of Marketplace Resources.</Empty>;
+  if (s.kind !== "partner") return <Empty>Product vendors are not part of Partner Resources.</Empty>;
   const bySection = (sec: string, status: string) => d.data.resources.filter((r: any) => r.section === sec && r.status === status);
   const openTasks = d.data.tasks.filter((t: any) => t.slack_status === "open" && t.tracker_status !== "done");
   return (
@@ -155,7 +155,7 @@ function SupplierDetail({ supplier, nav, onChanged }: { supplier: string; nav: N
       })}
       <Section title="Corporate Gifts tasks" count={openTasks.length} defaultOpen={d.data.tasks.length > 0}>
         <p className="hint">Marketing tasks are reviewed and assigned in the Marketing Dashboard, then appear in Marketing Tasks (Task Tracker). Work owned outside Marketing is a check-off item. Resolve works the same here and in the dashboard.</p>
-        {d.data.tasks.length === 0 && <Empty>No tasks for this marketplace.</Empty>}
+        {d.data.tasks.length === 0 && <Empty>No tasks for this partner.</Empty>}
         <TaskList tasks={d.data.tasks} onChanged={reload} />
       </Section>
       {(d.data.actions.length > 0 || d.data.samples.length > 0) && (
@@ -184,7 +184,7 @@ function Library() {
   const current = (d.data?.resources ?? []).filter((r: any) => r.status === "current");
   return (
     <>
-      <p className="hint">General corporate materials and internal references. Use “Use for marketplaces” to attach a linked material to eligible marketplaces; the document's own sharing settings are not changed.</p>
+      <p className="hint">General corporate materials and internal references. Use “Use for partners” to attach a linked material to eligible partners; the document's own sharing settings are not changed.</p>
       <div className="filters"><button className="btn small" onClick={() => setEdit({})}>Add material</button></div>
       {d.loading && !d.data && <Loading />}
       <ErrorBox error={d.error} />
@@ -216,21 +216,21 @@ function ShareForm({ r, onClose, onSaved }: { r: any; onClose: () => void; onSav
   };
   const names = (xs: any[]) => xs.map((x) => x.reason ? `${x.name} (${x.reason.toLowerCase()})` : x.name).join(", ");
   return (
-    <Overlay kind="modal" title="Use for other marketplaces" onClose={done ? onSaved : onClose}>
+    <Overlay kind="modal" title="Use for other partners" onClose={done ? onSaved : onClose}>
       <div className="form-grid">
-        <p className="hint wide"><strong>{r.title}</strong> · {TYPE_LABEL[r.resource_type]?.[0]}. The same link, title, category and source reference are added to each marketplace you choose. Marketplaces that already have this link are skipped.</p>
+        <p className="hint wide"><strong>{r.title}</strong> · {TYPE_LABEL[r.resource_type]?.[0]}. The same link, title, category and source reference are added to each partner you choose. Partners that already have this link are skipped.</p>
         <ErrorBox error={s.error} />
-        {!done && <Field label="Marketplaces" required wide>
+        {!done && <Field label="Partners" required wide>
           <div className="row-gap wrap">{eligible.map((p: any) => (
             <label key={p.id} className="check"><input type="checkbox" checked={ids.includes(p.id)} onChange={() => toggle(p.id)} /> {p.name}</label>))}</div>
         </Field>}
-        {r.partner_specific && !done && <label className="check wide"><input type="checkbox" checked={confirm} onChange={(e) => setConfirm(e.target.checked)} /> This resource is marked partner-specific. Use it for the chosen marketplaces anyway.</label>}
+        {r.partner_specific && !done && <label className="check wide"><input type="checkbox" checked={confirm} onChange={(e) => setConfirm(e.target.checked)} /> This resource is marked partner-specific. Use it for the chosen partners anyway.</label>}
         {!done && <SignerField value={signer} onChange={setSigner} error={s.fe("signer_name")} />}
         {preview && !done && <p className="wide">Preview: adds to {preview.added.length ? names(preview.added) : "none"}{preview.skipped.length ? ` · skips ${names(preview.skipped)}` : ""}.</p>}
         {done && <p className="wide"><strong>Added to:</strong> {done.added.length ? names(done.added) : "none"}{done.skipped.length ? <> · <strong>Skipped:</strong> {names(done.skipped)}</> : ""}.</p>}
         <p className="wide">
           {!done && <><button type="button" className="btn small" disabled={s.saving || !ids.length} onClick={() => run(true)}>Preview</button>{" "}
-            <button type="button" className="btn small primary" disabled={s.saving || !preview || (r.partner_specific && !confirm)} onClick={() => run(false)}>Add to marketplaces</button>{" "}</>}
+            <button type="button" className="btn small primary" disabled={s.saving || !preview || (r.partner_specific && !confirm)} onClick={() => run(false)}>Add to partners</button>{" "}</>}
           <button type="button" className="btn small ghost" onClick={done ? onSaved : onClose}>{done ? "Close" : "Cancel"}</button>
         </p>
       </div>
@@ -344,7 +344,7 @@ function ResourceList({ items, onEdit, onReplace, onShare }: { items: any[]; onE
             {r.origin === "slack" && <Pill tone="info">From Slack</Pill>}
             <span className="spacer" />
             {r.link_needed && <button className="btn small" onClick={() => onEdit(r)}>Add link</button>}
-            {onShare && r.link_url && !r.internal && r.status === "current" && <button className="btn ghost small" onClick={() => onShare(r)}>{r.scope === "library" ? "Use for marketplaces" : "Use for other marketplaces"}</button>}
+            {onShare && r.link_url && !r.internal && r.status === "current" && <button className="btn ghost small" onClick={() => onShare(r)}>{r.scope === "library" ? "Use for partners" : "Use for other partners"}</button>}
             {onReplace && <button className="btn ghost small" onClick={() => onReplace(r)}>Replace</button>}
             <button className="btn ghost small" onClick={() => onEdit(r)}>Edit</button>
           </div>
@@ -353,7 +353,7 @@ function ResourceList({ items, onEdit, onReplace, onShare }: { items: any[]; onE
             {r.effective_date && <>Effective {r.effective_date} · </>}
             Last confirmed {r.last_confirmed_on ?? "—"}
             {r.source_url && <> · <ExtLink href={r.source_url}>Source message</ExtLink></>}
-            {r.used_on > 0 && <> · Used on {r.used_on} marketplace{r.used_on > 1 ? "s" : ""}</>}
+            {r.used_on > 0 && <> · Used on {r.used_on} partner{r.used_on > 1 ? "s" : ""}</>}
             {r.requirement_text && <> · Requirement: {r.requirement_text} ({CONFIRM_LABEL[r.requirement_state]})</>}
             {r.action_title && <> · Action: {r.action_title} ({ACTION_STATUS[r.action_status]}{r.action_due ? `, due ${r.action_due}` : ""})</>}
             {r.status === "superseded" && r.superseded_at && <> · Superseded {dateTime(r.superseded_at)}</>}
@@ -398,7 +398,7 @@ function ResourceForm({ supplier, data, r, section, replacing, onClose, onSaved 
         <Field label="Link" error={s.fe("link_url")} hint="The document, folder, sheet or page itself (not the Slack message)."><input type="url" value={f.link_url} onChange={(e) => setF({ ...f, link_url: e.target.value })} /></Field>
         {!f.link_url && <label className="check"><input type="checkbox" checked={f.link_needed} onChange={(e) => setF({ ...f, link_needed: e.target.checked })} /> Link needed (add it later)</label>}
         {supplier !== "library" && <label className="check"><input type="checkbox" checked={f.partner_specific} onChange={(e) => setF({ ...f, partner_specific: e.target.checked })} /> Partner-specific</label>}
-        {supplier === "library" && <label className="check"><input type="checkbox" checked={f.internal} onChange={(e) => setF({ ...f, internal: e.target.checked })} /> Internal reference (not attached to marketplaces)</label>}
+        {supplier === "library" && <label className="check"><input type="checkbox" checked={f.internal} onChange={(e) => setF({ ...f, internal: e.target.checked })} /> Internal reference (not attached to partners)</label>}
         <Field label="Source message link" error={s.fe("source_url")} hint="Slack or email link that confirms it, if any."><input type="url" value={f.source_url} onChange={(e) => setF({ ...f, source_url: e.target.value })} /></Field>
         <Field label="Effective date" error={s.fe("effective_date")} hint="Only when stated."><input type="date" value={f.effective_date} onChange={(e) => setF({ ...f, effective_date: e.target.value })} /></Field>
         <Field label="Last confirmed" error={s.fe("last_confirmed_on")}><input type="date" value={f.last_confirmed_on} onChange={(e) => setF({ ...f, last_confirmed_on: e.target.value })} /></Field>
@@ -427,7 +427,7 @@ function ReviewQueue() {
   const [decide, setDecide] = useState<{ item: any; option: number | null } | null>(null);
   return (
     <>
-      <p className="hint">Conflicting Slack evidence about a marketplace field. Nothing has changed the record yet.</p>
+      <p className="hint">Conflicting Slack evidence about a partner field. Nothing has changed the record yet.</p>
       <div className="filters"><Select value={status} onChange={setStatus} options={{ open: "Open", resolved: "Applied", dismissed: "Dismissed", all: "All" }} aria-label="Review status" /></div>
       {d.loading && !d.data && <Loading />}
       <ErrorBox error={d.error} />
@@ -489,7 +489,7 @@ function DecisionForm({ item, option, onClose, onSaved }: { item: any; option: n
         <ErrorBox error={s.error} />
         <p className="hint wide">{opt && opt.change.type === "complete" ? "Completes the chosen item with this Slack message as evidence. The other items stay open."
           : opt ? `${item.supplier_hint}: ${FIELD_LABEL[item.field]} changes from ${fmtValue(item.field, item.current_value)} to ${fmtValue(item.field, opt.change.to)}. The item closes once this is saved.`
-          : "Closes the item without changing the marketplace."}</p>
+          : "Closes the item without changing the partner."}</p>
         {needsReason && <Field label="Reason" required><Select value={reason} onChange={setReason} options={REASON_LABEL} empty="Choose…" /></Field>}
         <Field label="Note (optional)" wide><textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} /></Field>
         <SignerField value={signer} onChange={setSigner} error={s.fe("signer_name")} />
@@ -550,7 +550,7 @@ function FollowUps() {
       {d.data && d.data.actions.length === 0 && <Empty>Nothing open.</Empty>}
       {d.data && d.data.actions.length > 0 && (
         <div className="table-wrap"><table className="dense">
-          <thead><tr><th>Type</th><th>What</th><th>Marketplace</th><th>Owner</th><th>Due</th><th>Status</th><th /></tr></thead>
+          <thead><tr><th>Type</th><th>What</th><th>Partner</th><th>Owner</th><th>Due</th><th>Status</th><th /></tr></thead>
           <tbody>{d.data.actions.map((a: any) => (
             <tr key={a.id}>
               <td><Pill tone={a.kind === "blocker" ? "danger" : "neutral"}>{ACTION_KIND[a.kind]}</Pill></td>
@@ -721,7 +721,7 @@ function TaskForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
     <Overlay kind="modal" title="Add Corporate Gifts task" onClose={onClose}>
       <form onSubmit={submit} className="form-grid">
         <ErrorBox error={s.error} />
-        <Field label="Task" required wide error={s.fe("title")} hint="An action, e.g. “Send the marketplace our holiday catalog”."><input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} maxLength={300} /></Field>
+        <Field label="Task" required wide error={s.fe("title")} hint="An action, e.g. “Send the partner our holiday catalog”."><input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} maxLength={300} /></Field>
         <Field label="Marketplaces" required wide error={s.fe("marketplace_ids")}>
           <div className="row-gap wrap">{eligible.map((p: any) => (
             <label key={p.id} className="check"><input type="checkbox" checked={f.marketplace_ids.includes(p.id)} onChange={() => toggle(p.id)} /> {p.name}</label>))}</div>
@@ -739,7 +739,7 @@ function TaskForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
 function SupplierSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const list = useLoad(() => get("/suppliers"), []);
   const opts: [string, string][] = list.data ? list.data.partners.map((p: any) => [p.ref, p.name] as [string, string]) : [];
-  return <Select value={value} onChange={onChange} options={opts} empty="No marketplace" aria-label="Marketplace" />;
+  return <Select value={value} onChange={onChange} options={opts} empty="No partner" aria-label="Partner" />;
 }
 
 function ActionForm({ a, onClose, onSaved }: { a: any; onClose: () => void; onSaved: () => void }) {
@@ -759,7 +759,7 @@ function ActionForm({ a, onClose, onSaved }: { a: any; onClose: () => void; onSa
       <form onSubmit={submit} className="form-grid">
         <ErrorBox error={s.error} />
         {!a.id && <Field label="Type" required><Select value={f.kind} onChange={(v) => setF({ ...f, kind: v })} options={ACTION_KIND} /></Field>}
-        {!a.id && <Field label="Marketplace (optional)"><SupplierSelect value={f.supplier} onChange={(v) => setF({ ...f, supplier: v })} /></Field>}
+        {!a.id && <Field label="Partner (optional)"><SupplierSelect value={f.supplier} onChange={(v) => setF({ ...f, supplier: v })} /></Field>}
         <Field label="What" required wide error={s.fe("title")}><input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} maxLength={300} /></Field>
         <Field label="Owner" error={s.fe("owner")}><input value={f.owner} onChange={(e) => setF({ ...f, owner: e.target.value })} /></Field>
         <Field label="Due date" error={s.fe("due_date")} hint="Only when one was agreed."><input type="date" value={f.due_date} onChange={(e) => setF({ ...f, due_date: e.target.value })} /></Field>
@@ -779,7 +779,7 @@ function Samples() {
   const [edit, setEdit] = useState<any | null>(null);
   return (
     <>
-      <p className="hint">Workflow status of sample boxes (no contact details). The Google Form signup count on Marketplaces is separate and is not changed here.</p>
+      <p className="hint">Workflow status of sample boxes (no contact details). The Google Form signup count on Partners is separate and is not changed here.</p>
       <div className="filters"><button className="btn small" onClick={() => setEdit({})}>Add sample request</button></div>
       {d.loading && !d.data && <Loading />}
       <ErrorBox error={d.error} />
@@ -814,7 +814,7 @@ function SampleForm({ x, onClose, onSaved }: { x: any; onClose: () => void; onSa
       <form onSubmit={submit} className="form-grid">
         <ErrorBox error={s.error} />
         <Field label="Company or partner" required error={s.fe("label")} hint="No personal contact details."><input value={f.label} onChange={(e) => setF({ ...f, label: e.target.value })} /></Field>
-        {!x.id && <Field label="Linked marketplace (optional)"><SupplierSelect value={f.supplier} onChange={(v) => setF({ ...f, supplier: v })} /></Field>}
+        {!x.id && <Field label="Linked partner (optional)"><SupplierSelect value={f.supplier} onChange={(v) => setF({ ...f, supplier: v })} /></Field>}
         <Field label="Status" required><Select value={f.status} onChange={(v) => setF({ ...f, status: v })} options={SAMPLE_LABEL} /></Field>
         <Field label="Status date"><input type="date" value={f.status_on} onChange={(e) => setF({ ...f, status_on: e.target.value })} /></Field>
         <Field label="Source message link" error={s.fe("source_url")}><input type="url" value={f.source_url} onChange={(e) => setF({ ...f, source_url: e.target.value })} /></Field>
@@ -854,8 +854,8 @@ function SlackScans() {
 }
 
 const SKIP_LABEL: Record<string, string> = {
-  supplier_role: "about a company's product-supplier role", not_listed: "not about an eligible Marketplaces record",
-  role_unclear: "about a marketplace whose sales role is unclear", not_confirmed: "not confirmed", not_open: "about work already done",
+  supplier_role: "about a company's product-supplier role", not_listed: "not about an eligible Partners record",
+  role_unclear: "about a partner whose sales role is unclear", not_confirmed: "not confirmed", not_open: "about work already done", partner_closed: "about a skipped or closed partner (no new tasks)",
   progress: "progress updates (nothing completed)", no_match: "completions with no matching item",
 };
 
@@ -870,12 +870,12 @@ function ChangeList({ r }: { r: any }) {
   const skipped = Object.entries(r.skipped_reasons ?? {}).filter(([, n]) => (n as number) > 0);
   return (
     <div className="wide">
-      {status.length > 0 && <><h4>Marketplace fields ({status.length})</h4><div className="table-wrap"><table className="dense">
-        <thead><tr><th>Marketplace</th><th>Field</th><th>From</th><th>To</th></tr></thead>
+      {status.length > 0 && <><h4>Partner fields ({status.length})</h4><div className="table-wrap"><table className="dense">
+        <thead><tr><th>Partner</th><th>Field</th><th>From</th><th>To</th></tr></thead>
         <tbody>{status.map((c: any, n: number) => <tr key={n}><td>{c.partner.name}</td><td>{FIELD_LABEL[c.field]}</td><td>{fmtValue(c.field, c.from)}</td><td><strong>{fmtValue(c.field, c.to)}</strong></td></tr>)}</tbody>
       </table></div></>}
       {resources.length > 0 && <><h4>Resources ({resources.length})</h4><div className="table-wrap"><table className="dense">
-        <thead><tr><th>Marketplace</th><th>Type</th><th>Resource</th><th>Outcome</th></tr></thead>
+        <thead><tr><th>Partner</th><th>Type</th><th>Resource</th><th>Outcome</th></tr></thead>
         <tbody>{resources.map((c: any, n: number) => { const [l, t] = RES_ACTION[c.action] ?? [c.action, "neutral"]; return <tr key={n}>
           <td>{c.partner ? c.partner.name : "General materials"}</td><td>{TYPE_LABEL[c.resource_type]?.[0] ?? c.resource_type}</td>
           <td>{c.title}{c.link === "slack_file" ? " (Slack file)" : ""}{c.supersedes ? ` · supersedes ${c.supersedes}` : ""}</td><td><Pill tone={t as any}>{l}</Pill></td></tr>; })}</tbody>
