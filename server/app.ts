@@ -13,6 +13,7 @@ import { revenueShopifyRoutes } from "./routes/revenueShopify";
 import { handleIngest } from "./ingestEndpoint";
 import { handleSlackIngest } from "./slackIngestEndpoint";
 import { supplierRoutes } from "./routes/suppliers";
+import { partnerRoutes } from "./routes/partners";
 import { slackImportRoutes } from "./routes/slackImport";
 import { handleReporting } from "./reportingEndpoint";
 import { sampleSignupsReport } from "./lib/sampleSignups";
@@ -27,6 +28,7 @@ importRoutes(router);
 pricingImportRoutes(router);
 revenueShopifyRoutes(router);
 supplierRoutes(router);
+partnerRoutes(router);
 slackImportRoutes(router);
 // All-time sample box signup count for the Marketplaces page (count only).
 router.get("/sample-signups", async () => sampleSignupsReport());
@@ -39,7 +41,7 @@ export type AppOptions = {
 /** Default request-body limit; only the file uploads below may be larger (Netlify's 6 MB function limit). */
 const MAX_BODY = 1024 * 1024;
 const LARGE_BODY = 6 * 1024 * 1024;
-const LARGE_BODY_PATHS = [/^\/pricing-import\/preview$/, /^\/revenue\/imports\/manual$/, /^\/slack\/import$/];
+const LARGE_BODY_PATHS = [/^\/pricing-import\/preview$/, /^\/revenue\/imports\/manual$/, /^\/slack\/import$/, /^\/partners\/import\/(preview|apply)$/];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Rejects cross-site browser writes: a foreign Origin, or a browser-declared cross-site request. */

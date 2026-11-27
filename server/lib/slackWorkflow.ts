@@ -123,7 +123,7 @@ export const passSchema = z.object({
 }).strict();
 
 export type Outcome = "added" | "updated" | "flagged" | "unchanged" | "skipped";
-export type SkipReason = "supplier_role" | "not_listed" | "role_unclear" | "not_confirmed" | "not_open" | "progress" | "no_match";
+export type SkipReason = "supplier_role" | "not_listed" | "role_unclear" | "not_confirmed" | "not_open" | "progress" | "no_match" | "partner_closed";
 type PartnerName = { id: string; name: string };
 export type Change =
   | { type: "status"; partner: PartnerName; field: "relationship_status" | "application_status" | "application_date"; from: string | null; to: string | null }
@@ -181,7 +181,7 @@ export async function applyPass(input: unknown, opts: { dryRun?: boolean; import
   const actor = opts.importedBy ?? WORKFLOW;
   const result: PassResult = {
     channel: pass.channel, dry_run: !!opts.dryRun, added: 0, updated: 0, flagged: 0, unchanged: 0, skipped: 0,
-    skipped_reasons: { supplier_role: 0, not_listed: 0, role_unclear: 0, not_confirmed: 0, not_open: 0, progress: 0, no_match: 0 }, changes: [], findings: [],
+    skipped_reasons: { supplier_role: 0, not_listed: 0, role_unclear: 0, not_confirmed: 0, not_open: 0, progress: 0, no_match: 0, partner_closed: 0 }, changes: [], findings: [],
   };
   try {
     await tx(async (c) => {
@@ -425,6 +425,9 @@ async function applyTask(c: pg.PoolClient, f: z.infer<typeof taskFinding>, partn
   if (!row) {
     // A historical or completed action does not establish an open task.
     if (f.task_status !== "open") return { outcome: "skipped", reason: "not_open" };
+    // Skipped, declined, on-hold and inactive partners get no new task suggestions (their records and history stay).
+    const closed = (await c.query("select 1 from marketplaces where id = any($1) and status = any($2)", [ids, INACTIVE_STATUSES])).rowCount;
+    if (closed) return { outcome: "skipped", reason: "partner_closed" };
     const rt = await routeFor(c, next.owner_hint);
     const ins = (await c.query(
       `insert into corporate_task_requests (task_key, title, brief, owner_hint, due_date, slack_status, marketplace_ids, source_refs, origin, created_by,

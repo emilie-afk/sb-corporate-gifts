@@ -7,14 +7,20 @@ import { HttpError, badRequest, conflict, notFound } from "../http";
 import { fetchCollectionProductIds } from "../lib/shopify";
 import { parse, text, reqText, displayName, url, email, date, version, assertUuid, defined } from "../validate";
 import { DEFAULT_MILESTONES } from "../lib/milestones";
+import {
+  CATEGORIES, CHANNEL_MODELS, OCCASIONS, PRIORITIES, RESEARCH_STATES, REQUIREMENT_KINDS, SB_READINESS, VIEWS, OUTREACH_ROLES,
+  STAGE_GROUPS, statusesInGroups, viewCondition, isClosed, type View,
+} from "../lib/partners";
 
+// Stored stage values (unchanged keys; "contacted" and "skipped" added for Partners). Display groups: lib/partners.
 export const STATUSES = [
-  "prospect", "reconnecting", "preparing_application", "in_discussion", "application_submitted",
-  "approved", "setting_up_listings", "live", "on_hold", "rejected", "not_qualified", "inactive",
+  "prospect", "contacted", "reconnecting", "preparing_application", "in_discussion", "application_submitted",
+  "approved", "setting_up_listings", "live", "on_hold", "rejected", "not_qualified", "skipped", "inactive",
 ] as const;
-export const INACTIVE_STATUSES = ["on_hold", "rejected", "not_qualified", "inactive"] as const;
+/** Stages that need a reason and are kept out of outreach (same set as lib/partners CLOSED_STATUSES). */
+export const INACTIVE_STATUSES = ["on_hold", "rejected", "not_qualified", "skipped", "inactive"] as const;
 export const INACTIVE_REASONS = [
-  "fulfillment_requirement", "pricing_or_margin", "product_fit", "application_rejected",
+  "fulfillment_requirement", "insurance_or_compliance", "pricing_or_margin", "product_fit", "application_rejected",
   "no_current_demand", "partnership_paused", "other",
 ] as const;
 const isInactive = (s: string) => (INACTIVE_STATUSES as readonly string[]).includes(s);
@@ -43,7 +49,45 @@ const detailsSchema = z.object({
   aliases: z.array(displayName(120)).max(10).optional(),
   application_status: z.enum(["not_applied", "preparing", "submitted", "under_review", "approved", "rejected", "withdrawn"]).nullable().optional(),
   application_date: date,
+  // Partners
+  category: z.enum(CATEGORIES).optional(),
+  channel_models: z.array(z.enum(CHANNEL_MODELS)).max(CHANNEL_MODELS.length).optional(),
+  occasion_tags: z.array(z.enum(OCCASIONS)).max(OCCASIONS.length).optional(),
+  priority: z.enum(PRIORITIES).optional(),
+  research_state: z.enum(RESEARCH_STATES).nullable().optional(),
+  parent_company: text(500),
+  opportunity_summary: text(4000),
+  next_action: text(2000),
+  next_action_due: date,
+  contact_next_step: text(2000),
+  owner: text(80),
 });
+
+/** Partner list with derived columns: best outreach contact, published routes, next due date, readiness. */
+const PARTNER_SQL = `
+  with base as (
+    ${PROGRESS_SQL.trim()}
+  ), x as (
+    select b.*, bc.name as best_contact_name, bc.role as best_contact_role, bc.role_verification as best_contact_verification,
+      (select count(*) from partner_applications a where a.marketplace_id = b.id and a.removed_at is null
+         and a.purpose in ('supplier_application', 'partnership', 'self_serve_app'))::int as route_count,
+      (select min(k.due_date) from corporate_actions k where k.marketplace_id = b.id and k.status = 'open') as action_due,
+      least(b.next_action_due, (select min(k.due_date) from corporate_actions k where k.marketplace_id = b.id and k.status = 'open')) as next_due
+    from base b
+    left join lateral (
+      select pc.name, pc.role, pc.role_verification from partner_contacts pc
+      where pc.marketplace_id = b.id and pc.removed_at is null and pc.role = any('{${OUTREACH_ROLES.join(",")}}'::text[])
+        and pc.role_verification not in ('historical', 'former')
+      order by (pc.rank = 'primary') desc, (pc.rank = 'backup') desc, pc.created_at limit 1) bc on true
+  ), y as (
+    select x.*, case when x.best_contact_name is not null then 'contact'
+                     when x.route_count > 0 then 'route'
+                     when x.research_state = 'not_researched' then 'not_researched'
+                     when x.research_state = 'no_contact_needed' then 'no_contact_needed'
+                     else 'needed' end as readiness
+    from x
+  )`;
+const READINESS = ["contact", "route", "needed", "not_researched", "no_contact_needed"] as const;
 
 async function loadMarketplace(id: string) {
   assertUuid(id);
@@ -54,6 +98,7 @@ async function loadMarketplace(id: string) {
 
 export function marketplaceRoutes(r: Router) {
   r.get("/marketplaces", async ({ query: q }) => {
+    if (q.get("view")) return partnerList(q);
     const where: string[] = [];
     const params: unknown[] = [];
     if (q.get("q")) { params.push(`%${q.get("q")}%`); where.push(`m.name ilike $${params.length}`); }
@@ -147,7 +192,18 @@ export function marketplaceRoutes(r: Router) {
     ]);
     // Number of current Marketplace Resources for the "Resources" shortcut on this record.
     const rc = await one("select count(*)::int as n from supplier_resources where marketplace_id = $1 and status = 'current' and removed_at is null", [m.id]);
-    return { marketplace: m, channel, milestones, requirements, communications, products, statusHistory, milestoneHistory: history, resource_count: rc?.n ?? 0 };
+    const [contacts, applications, openActions, openTasks, imports] = await Promise.all([
+      query("select * from partner_contacts where marketplace_id = $1 and removed_at is null order by (rank = 'primary') desc, (rank = 'backup') desc, created_at", [m.id]),
+      query("select * from partner_applications where marketplace_id = $1 and removed_at is null order by created_at", [m.id]),
+      query("select id, kind, title, owner, due_date, status, origin from corporate_actions where marketplace_id = $1 and status = 'open' order by due_date nulls last, created_at", [m.id]),
+      // Open Corporate Gifts task requests that name this partner. Shown for reconciliation; never closed automatically.
+      query(`select id, title, due_date, route, delivery_status, slack_status, tracker_task_id, tracker_status, tracker_open_url from corporate_task_requests
+             where $1 = any(marketplace_ids) and slack_status = 'open' and delivery_status <> 'dismissed' order by created_at`, [m.id]),
+      query(`select i.batch_id, i.line, i.outcome, b.source_name, b.created_at, b.status from partner_import_items i join partner_import_batches b on b.id = i.batch_id
+             where i.marketplace_id = $1 order by b.created_at desc limit 20`, [m.id]),
+    ]);
+    return { marketplace: m, channel, milestones, requirements, communications, products, statusHistory, milestoneHistory: history, resource_count: rc?.n ?? 0,
+      contacts, applications, open_actions: openActions, open_tasks: openTasks, imports, closed: isClosed(m.status) };
   });
 
   r.patch("/marketplaces/:id", async ({ params, body, actor }) => {
@@ -291,6 +347,12 @@ export function marketplaceRoutes(r: Router) {
     confirmation_state: z.enum(["unverified", "awaiting_clarification", "confirmed"]).default("unverified"),
     source_ref: text(2000),
     verified_on: date,
+    // Partners: published requirement vs negotiated term vs expected ordering pattern (assumption) vs open question
+    // vs SB capability note; where it applies; whether SB meets it.
+    kind: z.enum(REQUIREMENT_KINDS).default("published"),
+    applicability: text(500),
+    sb_readiness: z.enum(SB_READINESS).nullable().optional(),
+    verification: text(2000),
   });
 
   r.get("/marketplaces/:id/requirements", async ({ params }) => {
@@ -306,10 +368,11 @@ export function marketplaceRoutes(r: Router) {
     return tx(async (c) => {
       const confirmed = d.confirmation_state === "confirmed";
       const ins = await c.query(
-        `insert into requirements (marketplace_id, category, requirement, response, confirmation_state, source_ref, verified_on, confirmed_by, confirmed_at, created_by)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *`,
+        `insert into requirements (marketplace_id, category, requirement, response, confirmation_state, source_ref, verified_on, confirmed_by, confirmed_at, created_by,
+           kind, applicability, sb_readiness, verification)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning *`,
         [params.id, d.category, d.requirement, d.response ?? null, d.confirmation_state, d.source_ref ?? null, d.verified_on ?? null,
-          confirmed ? a.signer : null, confirmed ? new Date() : null, a.signer],
+          confirmed ? a.signer : null, confirmed ? new Date() : null, a.signer, d.kind, d.applicability ?? null, d.sb_readiness ?? null, d.verification ?? null],
       );
       await audit(c, a, { entityType: "requirement", entityId: ins.rows[0].id, marketplaceId: params.id, action: "create", after: ins.rows[0] });
       return { requirement: ins.rows[0] };
@@ -358,7 +421,7 @@ export function marketplaceRoutes(r: Router) {
     const b = await body();
     const a = actor(b);
     assertUuid(params.id); assertUuid(params.rid);
-    const d = defined(parse(reqSchema.partial().extend({ version, remove: z.boolean().optional() }), b)) as any;
+    const d = defined(parse(reqSchema.partial().extend({ kind: z.enum(REQUIREMENT_KINDS).optional(), version, remove: z.boolean().optional() }), b)) as any;
     return tx(async (c) => {
       const { version: v, remove, ...fields } = d;
       if ("confirmation_state" in b && b.confirmation_state !== undefined) {
@@ -569,16 +632,74 @@ export function marketplaceRoutes(r: Router) {
   });
 }
 
+const likeEscape = (v: string) => v.replace(/[\\%_]/g, (c) => `\\${c}`);
+const listParam = (q: URLSearchParams, k: string) => (q.get(k) ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+
+/** Partners list for one saved view, with the same filters applied to every view's count. */
+async function partnerList(q: URLSearchParams) {
+  const view = q.get("view") as View;
+  if (!(VIEWS as readonly string[]).includes(view)) throw badRequest("Unknown view.");
+  const only = <T extends readonly string[]>(k: string, allowed: T) => {
+    const v = listParam(q, k);
+    if (v.some((x) => !(allowed as readonly string[]).includes(x))) throw badRequest(`Unknown ${k.replace("_", " ")}.`);
+    return v;
+  };
+  const filters = { category: only("category", CATEGORIES), channel: only("channel_model", CHANNEL_MODELS), stage: only("stage", STAGE_GROUPS),
+    readiness: only("readiness", READINESS), priority: only("priority", PRIORITIES), owner: listParam(q, "owner"), q: q.get("q")?.trim() ?? "" };
+  const build = () => {
+    const params: unknown[] = [];
+    const push = (v: unknown) => { params.push(v); return `$${params.length}`; };
+    const where: string[] = [];
+    if (filters.q) {
+      const p = push(`%${likeEscape(filters.q)}%`);
+      where.push(`(y.name ilike ${p} or array_to_string(y.aliases, ' ') ilike ${p} or coalesce(y.parent_company, '') ilike ${p}
+        or exists (select 1 from partner_contacts pc where pc.marketplace_id = y.id and pc.removed_at is null and pc.name ilike ${p}))`);
+    }
+    if (filters.category.length) where.push(`y.category = any(${push(filters.category)})`);
+    if (filters.channel.length) where.push(`y.channel_models && ${push(filters.channel)}::text[]`);
+    if (filters.stage.length) where.push(`y.status = any(${push(statusesInGroups(filters.stage))})`);
+    if (filters.readiness.length) where.push(`y.readiness = any(${push(filters.readiness)})`);
+    if (filters.priority.length) where.push(`y.priority = any(${push(filters.priority)})`);
+    if (filters.owner.length) {
+      const named = filters.owner.filter((o) => o !== "none").map((o) => o.toLowerCase());
+      const parts = [];
+      if (named.length) parts.push(`lower(btrim(y.owner)) = any(${push(named)})`);
+      if (filters.owner.includes("none")) parts.push("nullif(btrim(y.owner), '') is null");
+      where.push(`(${parts.join(" or ")})`);
+    }
+    return { params, push, where };
+  };
+  const rowsQ = build();
+  const cond = viewCondition(view, rowsQ.push);
+  const dueFirst = ["follow_ups", "priority_a", "priority_b", "later"].includes(view);
+  const rows = await query(
+    `${PARTNER_SQL} select y.* from y where ${[cond, ...rowsQ.where].join(" and ")}
+     order by ${dueFirst ? "(y.next_due is null), y.next_due, " : ""}lower(y.name)`, rowsQ.params);
+  const countQ = build();
+  const counts = await one(
+    `${PARTNER_SQL} select ${VIEWS.map((v) => `count(*) filter (where ${viewCondition(v, countQ.push)})::int as ${v}`).join(", ")}
+     from y ${countQ.where.length ? "where " + countQ.where.join(" and ") : ""}`, countQ.params);
+  const owners = (await query("select distinct btrim(owner) as owner from marketplaces where nullif(btrim(owner), '') is not null order by 1")).map((r) => r.owner);
+  // Uncategorized is only a migration fallback: the screen keeps asking until every partner has a category.
+  const uncategorized = (await one("select count(*)::int as n from marketplaces where category = 'uncategorized'"))?.n ?? 0;
+  return { view, marketplaces: rows, view_counts: counts, owners, uncategorized };
+}
+
 /** One new marketplace / supplier opportunity: channel, record, default milestones, first status entry, audit. */
-async function createMarketplace(c: pg.PoolClient, d: any, a: Actor) {
+export async function createMarketplace(c: pg.PoolClient, d: any, a: Actor) {
   const ch = await c.query("insert into channels (name, type) values ($1,$2) returning id", [
     d.name, d.provider_type === "marketplace" ? "marketplace" : "sourcing",
   ]);
   const m = await c.query(
-    `insert into marketplaces (channel_id, name, provider_type, status, contact_name, contact_email, website_url, portal_url, description, priority_note, initial_action)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning *`,
+    `insert into marketplaces (channel_id, name, provider_type, status, contact_name, contact_email, website_url, portal_url, description, priority_note, initial_action,
+       category, channel_models, occasion_tags, priority, research_state, parent_company, opportunity_summary, next_action, next_action_due, contact_next_step, owner,
+       sales_role, aliases)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) returning *`,
     [ch.rows[0].id, d.name, d.provider_type, d.status, d.contact_name ?? null, d.contact_email ?? null, d.website_url ?? null,
-      d.portal_url ?? null, d.description ?? null, d.priority_note ?? null, d.initial_action ?? null],
+      d.portal_url ?? null, d.description ?? null, d.priority_note ?? null, d.initial_action ?? null,
+      d.category ?? "uncategorized", d.channel_models ?? [], d.occasion_tags ?? [], d.priority ?? "not_assessed", d.research_state ?? null,
+      d.parent_company ?? null, d.opportunity_summary ?? null, d.next_action ?? null, d.next_action_due ?? null, d.contact_next_step ?? null, d.owner ?? null,
+      d.sales_role ?? "confirmed", d.aliases ?? []],
   );
   const mid = m.rows[0].id;
   for (const [i, t] of DEFAULT_MILESTONES.entries()) {

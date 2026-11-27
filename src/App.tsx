@@ -8,7 +8,7 @@ import { SupplierResourcesScreen } from "./screens/SupplierResources";
 import { Manual } from "./screens/Manual";
 
 type Tab = "marketplaces" | "resources" | "pricing" | "revenue";
-const TABS: [Tab, string][] = [["marketplaces", "Marketplaces"], ["resources", "Marketplace Resources"], ["pricing", "Pricing"], ["revenue", "Revenue"]];
+const TABS: [Tab, string][] = [["marketplaces", "Partners"], ["resources", "Partner Resources"], ["pricing", "Pricing"], ["revenue", "Revenue"]];
 
 export type Nav = (tab: Tab, params?: Record<string, string>) => void;
 
