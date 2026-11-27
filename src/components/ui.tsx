@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, type ReactNode } from "react";
 import { ApiError } from "../api";
-import { INACTIVE, STATUS_LABEL } from "../format";
+import { INACTIVE, stageText } from "../format";
 
 // ---------------------------------------------------------------- signer
 const SIGNER_KEY = "sbg.signer";
@@ -134,7 +134,7 @@ export function Section({ title, count, children, actions, defaultOpen = true }:
 }
 
 export function StatusBadge({ status }: { status: string }) {
-  return <span className={`badge status-${status} ${INACTIVE.includes(status) ? "muted" : ""}`}>{STATUS_LABEL[status] ?? status}</span>;
+  return <span className={`badge status-${status} ${INACTIVE.includes(status) ? "muted" : ""}`}>{stageText(status)}</span>;
 }
 
 export function Pill({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "warn" | "ok" | "info" | "danger" }) {
